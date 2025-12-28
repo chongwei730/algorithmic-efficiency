@@ -309,11 +309,12 @@ def download_criteo1tb(
   download_url = get_url_request.json().get('direct_link')
 
   logging.info(f'Downloading ~342GB Criteo 1TB data .zip file:\n{download_url}')
-  download_request = requests.get(  # pylint: disable=missing-timeout
-    download_url, headers={'User-Agent': user_agent}, stream=True
-  )
+  # download_request = requests.get(  # pylint: disable=missing-timeout
+  #   download_url, headers={'User-Agent': user_agent}, stream=True
+  # )
 
   all_days_zip_filepath = os.path.join(tmp_criteo_dir, 'all_days.zip')
+  print("Error0")
   if not FLAGS.skip_download:
     download = True
     if os.path.exists(all_days_zip_filepath):
@@ -330,10 +331,10 @@ def download_criteo1tb(
         logging.info(f'Skipping download to {all_days_zip_filepath}')
         download = False
 
-    if download:
-      with open(all_days_zip_filepath, 'wb') as f:
-        for chunk in download_request.iter_content(chunk_size=1024):
-          f.write(chunk)
+    # if download:
+    #   with open(all_days_zip_filepath, 'wb') as f:
+    #     for chunk in download_request.iter_content(chunk_size=1024):
+    #       f.write(chunk)
 
   unzip_cmd = f'unzip {all_days_zip_filepath} -d {tmp_criteo_dir}'
   logging.info(f'Running Criteo 1TB unzip command:\n{unzip_cmd}')
@@ -344,6 +345,7 @@ def download_criteo1tb(
   # Unzip the individual days.
   processes = []
   gz_paths = []
+  print("Error1")
   for day in range(24):
     input_path = os.path.join(tmp_criteo_dir, f'day_{day}.gz')
     gz_paths.append(input_path)
@@ -357,7 +359,7 @@ def download_criteo1tb(
   for p in processes:
     p.communicate()
   _maybe_prompt_for_deletion(gz_paths, interactive_deletion)
-
+  print("Error2")
   # Split into files with 5M lines each: day_1.csv -> day_1_[0-39].csv.
   unzipped_paths = []
   for batch in range(6):
@@ -690,19 +692,19 @@ def download_librispeech(data_dir, tmp_dir):
   _maybe_mkdir(tmp_librispeech_dir)
   _maybe_mkdir(final_data_dir)
 
-  for split in ['dev', 'test']:
-    for version in ['clean', 'other']:
-      if split == 'test' and version == 'other':
-        continue
-      wget_cmd = (
-        f'wget --directory-prefix={tmp_librispeech_dir} '
-        f'http://www.openslr.org/resources/12/{split}-{version}.tar.gz'
-      )
-      subprocess.Popen(wget_cmd, shell=True).communicate()
-      tar_path = os.path.join(tmp_librispeech_dir, f'{split}-{version}.tar.gz')
-      subprocess.Popen(
-        f'tar xzvf {tar_path} --directory {tmp_librispeech_dir}', shell=True
-      ).communicate()
+  # for split in ['dev', 'test']:
+  #   for version in ['clean', 'other']:
+  #     if split == 'test' and version == 'other':
+  #       continue
+  #     wget_cmd = (
+  #       f'wget --directory-prefix={tmp_librispeech_dir} '
+  #       f'http://www.openslr.org/resources/12/{split}-{version}.tar.gz'
+  #     )
+  #     subprocess.Popen(wget_cmd, shell=True).communicate()
+  #     tar_path = os.path.join(tmp_librispeech_dir, f'{split}-{version}.tar.gz')
+  #     subprocess.Popen(
+  #       f'tar xzvf {tar_path} --directory {tmp_librispeech_dir}', shell=True
+  #     ).communicate()
 
   tars = [
     'raw-metadata.tar.gz',
@@ -710,31 +712,32 @@ def download_librispeech(data_dir, tmp_dir):
     'train-clean-360.tar.gz',
     'train-other-500.tar.gz',
   ]
-  for tar_filename in tars:
-    wget_cmd = (
-      f'wget --directory-prefix={tmp_librispeech_dir} '
-      f'http://www.openslr.org/resources/12/{tar_filename}'
-    )
-    subprocess.Popen(wget_cmd, shell=True).communicate()
-    tar_path = os.path.join(tmp_librispeech_dir, tar_filename)
-    subprocess.Popen(
-      f'tar xzvf {tar_path} --directory {tmp_librispeech_dir}', shell=True
-    ).communicate()
+  # for tar_filename in tars:
+    # wget_cmd = (
+    #   f'wget --directory-prefix={tmp_librispeech_dir} '
+    #   f'http://www.openslr.org/resources/12/{tar_filename}'
+    # )
+    # subprocess.Popen(wget_cmd, shell=True).communicate()
+  #   tar_path = os.path.join(tmp_librispeech_dir, tar_filename)
+  #   subprocess.Popen(
+  #     f'tar xzvf {tar_path} --directory {tmp_librispeech_dir}', shell=True
+  #   ).communicate()
 
   tokenizer_vocab_path = os.path.join(final_data_dir, 'spm_model.vocab')
 
   if not os.path.exists(tokenizer_vocab_path):
+    print("AWHDU")
     librispeech_tokenizer.run(
       train=True,
       input_dir=extracted_data_dir,
       tokenizer_vocab_path=tokenizer_vocab_path,
     )
 
-  librispeech_preprocess.run(
-    input_dir=extracted_data_dir,
-    output_dir=final_data_dir,
-    tokenizer_vocab_path=tokenizer_vocab_path,
-  )
+  # librispeech_preprocess.run(
+  #   input_dir=extracted_data_dir,
+  #   output_dir=final_data_dir,
+  #   tokenizer_vocab_path=tokenizer_vocab_path,
+  # )
 
 
 def download_mnist(data_dir):
@@ -780,16 +783,16 @@ def main(_):
   tmp_dir = os.path.abspath(os.path.expanduser(tmp_dir))
   if not FLAGS.skip_download:
     logging.info('Downloading data to %s...', data_dir)
-
   if FLAGS.all or FLAGS.criteo1tb:
     logging.info('Downloading criteo1tb...')
     download_criteo1tb(
       data_dir, tmp_dir, num_decompression_threads, FLAGS.interactive_deletion
     )
 
-  if FLAGS.all or FLAGS.mnist:
-    logging.info('Downloading MNIST...')
-    download_mnist(data_dir)
+  # if FLAGS.all or FLAGS.mnist:
+  #   logging.info('Downloading MNIST...')
+  #   download_mnist(data_dir)
+
 
   if FLAGS.all or FLAGS.fastmri:
     logging.info('Starting fastMRI download...\n')

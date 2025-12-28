@@ -13,7 +13,7 @@ python3 submission_runner.py \
     --experiment_dir=/home/znado/experiment_dir \
     --experiment_name=baseline
 """
-
+from collections import namedtuple
 import datetime
 import gc
 import importlib
@@ -31,6 +31,7 @@ import tensorflow as tf
 import torch
 import torch.distributed as dist
 from absl import app, flags, logging
+from algoperf.dist_utils import write_hparams, dict_to_namedtuple
 
 # New PRNG implementation for correct sharding, already default in JAX 0.5.0
 jax.config.update('jax_default_prng_impl', 'threefry2x32')
@@ -116,6 +117,7 @@ flags.DEFINE_string(
   'an absolute path rather than a relative path.',
 )
 flags.DEFINE_string('experiment_name', None, 'Name of the experiment.')
+flags.DEFINE_string('mode', 'line_search', 'mode')
 flags.DEFINE_boolean(
   'save_checkpoints',
   True,
@@ -384,7 +386,7 @@ def train_once(
       )
     try:
       with profiler.profile('Update parameters'):
-        optimizer_state, model_params, model_state = update_params(
+         optimizer_state, model_params, model_state = update_params(
           workload=workload,
           current_param_container=model_params,
           current_params_types=workload.model_params_types,
@@ -653,14 +655,28 @@ def score_submission_on_workload(
         'Must provide a tuning search space JSON file when using external '
         'tuning.'
       )
-    with open(tuning_search_space, 'r', encoding='UTF-8') as search_space_file:
-      tuning_search_space = halton.generate_search(
-        json.load(search_space_file), num_tuning_trials
-      )
+    
+    if RANK == 0:
+        with open(tuning_search_space, 'r', encoding='UTF-8') as f:
+            full_search_space = halton.generate_search(
+                json.load(f), num_tuning_trials
+            )
+        full_search_space = [h._asdict() for h in full_search_space]
+        obj_list = [full_search_space]
+    else:
+        obj_list = [None]
+    
+    dist.broadcast_object_list(obj_list, src=0)
+    full_search_space = obj_list[0]
+    # logging.warning(f"hyperparameter space {full_search_space} rank={RANK}")
+    # with open(tuning_search_space, 'r', encoding='UTF-8') as search_space_file:
+    #   tuning_search_space = halton.generate_search(
+    #     json.load(search_space_file), num_tuning_trials
+    #   )
     all_timings = {}
     all_metrics = {}
     tuning_search_space_iter = itertools.islice(
-      enumerate(tuning_search_space), hparam_start_index, hparam_end_index
+      enumerate(full_search_space), hparam_start_index, hparam_end_index
     )
     for hi, hyperparameters in tuning_search_space_iter:
       # Generate a new seed from hardware sources of randomness for each trial.
@@ -679,16 +695,28 @@ def score_submission_on_workload(
 
       tuning_dir_name = None
       if log_dir is not None:
+
         tuning_dir_name = os.path.join(log_dir, f'trial_{hi + 1}')
         logging.info(f'Creating tuning directory at {tuning_dir_name}.')
         logger_utils.makedir(tuning_dir_name)
 
         # If existing hyperparameter exists, use saved
         # hyperparameters for consistency.
-        hyperparameters = logger_utils.write_hparams(
-          hyperparameters, tuning_dir_name
-        )
-        tuning_search_space[hi] = hyperparameters
+        if RANK == 0:
+            hyperparameters = write_hparams(
+                    hyperparameters, tuning_dir_name
+                )
+        else:
+            hyperparameters = None
+
+            # ---- 5. Broadcast finalized hyperparameters ----
+        obj = [hyperparameters]
+        dist.broadcast_object_list(obj, src=0)
+        hyperparameters = obj[0]
+        hyperparameters = dict_to_namedtuple(hyperparameters)
+
+
+
 
       with profiler.profile('Train'):
         if capture_trace:
@@ -719,13 +747,13 @@ def score_submission_on_workload(
       all_timings[hi] = timing
       all_metrics[hi] = metrics
       logging.info(f'Tuning trial {hi + 1}/{num_tuning_trials}')
-      logging.info(f'Hyperparameters: {tuning_search_space[hi]}')
+      # logging.info(f'Hyperparameters: {full_search_space[hi]}')
       logging.info(f'Metrics: {all_metrics[hi]}')
       logging.info(f'Timing: {all_timings[hi]}')
       num_evals = len(all_metrics[hi]['eval_results'])
       logging.info(f'Total number of evals: {num_evals}')
       logging.info('=' * 20)
-    score = min(all_timings)
+    score = min(all_timings.values())
   else:
     if tuning_search_space is not None:
       raise ValueError(
