@@ -69,10 +69,12 @@ def get_log_dir(
       )
     else:
       if RANK == 0:
-        resume = input(
-          'Found existing experiment dir with the same name: {}. Do you wish '
-          'to resume training from this dir? [y/N]:'.format(experiment_path)
-        )
+
+        # resume = input(
+        #   'Found existing experiment dir with the same name: {}. Do you wish '
+        #   'to resume training from this dir? [y/N]:'.format(experiment_path)
+        # )
+        resume = "y"
         if resume.lower() != 'y':
           sys.exit()
 

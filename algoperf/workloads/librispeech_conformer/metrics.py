@@ -131,6 +131,7 @@ def load_tokenizer(
 
 
 def wer(tokenizer_vocab_path):
+  print("CAWDA",tokenizer_vocab_path)
   tokenizer = load_tokenizer(tokenizer_vocab_path)
 
   @flax.struct.dataclass

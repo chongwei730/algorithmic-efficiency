@@ -1,0 +1,14 @@
+{
+  "warmup_factor": {
+    "feasible_points": [0.05]
+  },
+  "label_smoothing": {
+    "feasible_points": [0.1, 0.2]
+  },
+  "dropout_rate": {
+    "feasible_points": [0.0, 0.1]
+  },
+  "d0": {
+    "feasible_points": [1e-6]
+  }
+}

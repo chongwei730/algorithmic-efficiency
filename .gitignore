@@ -4,6 +4,7 @@ __pycache__
 *eggs
 .vscode/
 env/
+test/
 venv/
 workdir/
 makefile
@@ -14,6 +15,8 @@ makefile
 *events.out.tfevents*
 algoperf/workloads/librispeech_conformer/data_dir
 algoperf/workloads/librispeech_conformer/work_dir
+algoperf/workloads/*
+algorithms/archived_paper_baselines
 *.flac
 *.npy
 *.csv
@@ -21,6 +24,7 @@ algoperf/workloads/librispeech_conformer/work_dir
 wandb/
 *.txt
 scoring/plots/
+datasets/dataset_setup.py
 
 !scoring/test_data/experiment_dir/study_0/mnist_jax/trial_0/eval_measurements.csv
 !scoring/test_data/experiment_dir/study_0/mnist_jax/trial_1/eval_measurements.csv
