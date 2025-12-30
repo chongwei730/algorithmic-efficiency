@@ -133,7 +133,7 @@ def update_params(
             rank = dist.get_rank()
   else:
             world, rank = 1, 0
-
+  torch.cuda.reset_peak_memory_stats()
   current_model = current_param_container
   current_model.train()
   optimizer_state['optimizer'].zero_grad()
@@ -141,6 +141,7 @@ def update_params(
   device = next(current_model.parameters()).device
 
   line_search_interval = int(round(hyperparameters.interval * workload.step_hint))
+  line_search_interval = 1
   # # logging.warning(f"step_hint {workload.step_hint} rank={rank}")
   # # logging.warning(f"hyperparameters.interval {hyperparameters.interval} rank={rank}")
   # # logging.warning(f"interval {line_search_interval} rank={rank}")
@@ -207,13 +208,13 @@ def update_params(
 
     scheduler = optimizer_state['scheduler']
     start_time = time.time()
-    scheduler.step(
-                closure,
-                c1=hyperparameters.c1,
-                step=global_step,
-                interval=line_search_interval,
-                condition="armijo",
-            )
+    # scheduler.step(
+    #             closure,
+    #             c1=hyperparameters.c1,
+    #             step=global_step,
+    #             interval=line_search_interval,
+    #             condition="armijo",
+    #         )
     elapsed = time.time() - start_time
     print(f"[LineSearch] {accum_steps} step took {elapsed:.4f} seconds")
     alpha = torch.tensor([scheduler.prev_alpha], device='cuda')
@@ -301,7 +302,7 @@ def update_params(
       grad_norm.item(),
     )
   
-
+  logging.warning(f"{torch.cuda.max_memory_allocated() / 1024**2} MB")
   return (optimizer_state, current_param_container, new_model_state)
 
 
@@ -344,7 +345,7 @@ def get_batch_size(workload_name):
   elif workload_name == 'imagenet_resnet_gelu':
     return 512
   elif workload_name == 'imagenet_vit':
-    return 1024
+    return 32
   elif workload_name == 'librispeech_conformer':
     return 256
   elif workload_name == 'librispeech_deepspeech':
@@ -381,8 +382,8 @@ def data_selection(
   # del global_step
   del rng
 
-  line_search_interval = int(round(hyperparameters.interval * workload.step_hint))
-
+  # line_search_interval = int(round(hyperparameters.interval * workload.step_hint))
+  line_search_interval = 1
   if global_step % line_search_interval != 0:
     batch = next(input_queue)
   else:

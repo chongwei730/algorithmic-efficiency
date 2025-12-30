@@ -69,6 +69,7 @@ def update_params(
   del loss_type
   del train_state
   del eval_results
+  torch.cuda.reset_peak_memory_stats()
 
   current_model = current_param_container
   current_model.train()
@@ -135,6 +136,7 @@ def update_params(
       loss.item(),
       grad_norm.item(),
     )
+  logging.warning(f"{torch.cuda.max_memory_allocated() / 1024**2} MB")
 
   return (optimizer_state, current_param_container, new_model_state)
 
@@ -175,7 +177,7 @@ def get_batch_size(workload_name):
   elif workload_name == 'imagenet_resnet_gelu':
     return 512
   elif workload_name == 'imagenet_vit':
-    return 1024
+    return 32
   elif workload_name == 'librispeech_conformer':
     return 256
   elif workload_name == 'librispeech_deepspeech':
@@ -187,7 +189,7 @@ def get_batch_size(workload_name):
   elif workload_name == 'mnist':
     return 16
   elif workload_name == 'cifar':
-    return 64
+    return 512
   else:
     raise ValueError(f'Unsupported workload name: {workload_name}.')
 

@@ -131,12 +131,8 @@ def update_params(
         )
 
 
-
-
         loss = loss_dict["summed"] / loss_dict["n_valid_examples"]
       
-
-        # total_loss += loss.item()
         if require_grad:
           (loss / accum_steps).backward() 
 
