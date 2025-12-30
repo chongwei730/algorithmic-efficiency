@@ -25,51 +25,6 @@ USE_PYTORCH_DDP = pytorch_setup()[0]
 
 
 
-# def infer_device_from_model(model):
-#     try:
-#         return next(model.parameters()).device
-#     except StopIteration:
-#         return torch.device("cpu")
-
-# def infer_device_from_batch(b):
-#     # 返回第一个探测到的 tensor 的 device；找不到就返回 None
-#     if torch.is_tensor(b):
-#         return b.device
-#     if isinstance(b, dict):
-#         for v in b.values():
-#             d = infer_device_from_batch(v)
-#             if d is not None:
-#                 return d
-#         return None
-#     # PyG 的 Data/Batch 通常有 .to()，但不保证有 .device
-#     # 常见字段：x, edge_index, edge_attr, y, pos, ...
-#     for attr in ("x", "edge_index", "edge_attr", "y", "pos"):
-#         if hasattr(b, attr):
-#             t = getattr(b, attr)
-#             if torch.is_tensor(t):
-#                 return t.device
-#     # 列表/元组等容器
-#     if isinstance(b, (list, tuple)):
-#         for v in b:
-#             d = infer_device_from_batch(v)
-#             if d is not None:
-#                 return d
-#     return None
-
-# def safe_batch_to_device(b, device):
-#     if hasattr(b, "to"):
-#         try:
-#             return b.to(device)
-#         except Exception:
-#             pass
-#     if torch.is_tensor(b):
-#         return b.to(device)
-#     if isinstance(b, dict):
-#         return {k: safe_batch_to_device(v, device) for k, v in b.items()}
-#     if isinstance(b, (list, tuple)):
-#         conv = [safe_batch_to_device(v, device) for v in b]
-#         return type(b)(conv) if isinstance(b, tuple) else conv
-#     return b
 
 
 def init_optimizer_state(
@@ -128,17 +83,26 @@ def update_params(
   del loss_type
   del train_state
   del eval_results
+  if dist.is_initialized():
+            world = dist.get_world_size()
+            rank = dist.get_rank()
+  else:
+            world, rank = 1, 0
 
   current_model = current_param_container
   current_model.train()
   optimizer_state['optimizer'].zero_grad()
   accum_steps = hyperparameters.accum_steps
+  device = next(current_model.parameters()).device
 
   line_search_interval = int(round(hyperparameters.interval * workload.step_hint))
+  # # logging.warning(f"step_hint {workload.step_hint} rank={rank}")
+  # # logging.warning(f"hyperparameters.interval {hyperparameters.interval} rank={rank}")
+  # # logging.warning(f"interval {line_search_interval} rank={rank}")
   
-  logging.warning(f"AWDAWD{global_step}, {global_step % line_search_interval}")
+
   if global_step % line_search_interval == 0:
-    def closure():
+    def closure(require_grad=False):
       optimizer_state['optimizer'].zero_grad()
       device = next(current_model.parameters()).device
       total_loss_t = torch.zeros((), device=device)
@@ -173,28 +137,22 @@ def update_params(
       
 
         # total_loss += loss.item()
-        try:
+        if require_grad:
           (loss / accum_steps).backward() 
-        except:
-          pass
-        total_loss_t = total_loss_t + loss.detach()
-        
 
+        total_loss_t = total_loss_t + loss.detach()
+      
       avg_loss_t = total_loss_t / accum_steps
 
 
       if dist.is_initialized():
+        # logging.warning(f"[rank {rank}] iter {global_step} Before closure_all_reduce")
         dist.all_reduce(avg_loss_t, op=dist.ReduceOp.SUM)
+        # logging.warning(f"[rank {rank}] iter {global_step} After closure_all_reduce")
         avg_loss_t /= dist.get_world_size()
 
       #####
-      if dist.is_initialized():
-            print("USING DDP")
-            world = dist.get_world_size()
-            rank = dist.get_rank()
-      else:
-            print("NO DDP")
-            world, rank = 1, 0
+
 
       print(f"[closure] rank={rank}/{world} is running forward+backward, loss={avg_loss_t}")
       #####
@@ -215,14 +173,18 @@ def update_params(
     print(f"[LineSearch] {accum_steps} step took {elapsed:.4f} seconds")
     alpha = torch.tensor([scheduler.prev_alpha], device='cuda')
 
-    if dist.is_initialized():
-            dist.broadcast(alpha, src=0)
+    # if dist.is_initialized():
+    #         dist.broadcast(alpha, src=0)
 
     for pg in optimizer_state['optimizer'].param_groups:
             pg['lr'] = alpha.item()
 
+    
+
 
     batch = batch[0]
+
+  # logging.warning(f"[rank {rank}] iter {global_step} before model_fn")
 
   logits_batch, new_model_state = workload.model_fn(
     params=current_model,
@@ -233,6 +195,7 @@ def update_params(
     update_batch_norm=True,
     dropout_rate=hyperparameters.dropout_rate,
   )
+  # logging.warning(f"[rank {rank}] iter {global_step} after model_fn")
 
   label_smoothing = (
     hyperparameters.label_smoothing
@@ -240,22 +203,26 @@ def update_params(
     else 0.0
   )
 
-
+  # logging.warning(f"[rank {rank}] iter {global_step} before loss_fn")
   loss_dict = workload.loss_fn(
     label_batch=batch['targets'],
     logits_batch=logits_batch,
     mask_batch=batch.get('weights'),
     label_smoothing=label_smoothing,
   )
+  # logging.warning(f"[rank {rank}] iter {global_step} after loss_fn")
   summed_loss = loss_dict['summed']
   n_valid_examples = loss_dict['n_valid_examples']
   if USE_PYTORCH_DDP:
     # Use dist_nn.all_reduce to ensure correct loss and gradient scaling.
+    # logging.warning(f"[rank {rank}] iter {global_step} Before normal_all_reduce")
     summed_loss = dist_nn.all_reduce(summed_loss)
     n_valid_examples = dist_nn.all_reduce(n_valid_examples)
+    # logging.warning(f"[rank {rank}] iter {global_step} After normal_all_reduce")
   loss = summed_loss / n_valid_examples
-
+  # logging.warning(f"[rank {rank}] iter {global_step} Before normal_backward")
   loss.backward()
+  # logging.warning(f"[rank {rank}] iter {global_step} After normal_backward")
 
   if hasattr(hyperparameters, 'grad_clip'):
     grad_clip = hyperparameters.grad_clip
@@ -273,10 +240,12 @@ def update_params(
         torch.stack([torch.norm(p.grad.detach(), 2) for p in parameters]), 2
       )
     if workload.metrics_logger is not None:
+      lr = optimizer_state['optimizer'].param_groups[0]['lr']
       workload.metrics_logger.append_scalar_metrics(
         {
           'loss': loss.item(),
           'grad_norm': grad_norm.item(),
+          'lr': lr
         },
         global_step,
       )
@@ -286,10 +255,9 @@ def update_params(
       loss.item(),
       grad_norm.item(),
     )
+  
 
   return (optimizer_state, current_param_container, new_model_state)
-
-
 
 
 
@@ -341,7 +309,7 @@ def get_batch_size(workload_name):
   elif workload_name == 'mnist':
     return 16
   elif workload_name == 'cifar':
-    return 64
+    return 512
   else:
     raise ValueError(f'Unsupported workload name: {workload_name}.')
 

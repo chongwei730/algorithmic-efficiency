@@ -85,11 +85,9 @@ def update_params(
   del train_state
   del eval_results
   if dist.is_initialized():
-            print("USING DDP")
             world = dist.get_world_size()
             rank = dist.get_rank()
   else:
-            print("NO DDP")
             world, rank = 1, 0
 
   current_model = current_param_container

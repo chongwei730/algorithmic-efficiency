@@ -1,0 +1,9 @@
+submission_name: Self-Tuning Baseline
+submission_folder: baseline
+authors: Algorithms Working Group
+affiliations: MLCommons
+version: '1.0'
+ruleset: self-tuning
+framework: JAX
+description: >-
+  Baseline using NadamW, a linear learning rate warmup followed by a cosine decay, and a single hyperparameter point ([Dahl et al., 2023](https://arxiv.org/abs/2306.07179)).

@@ -655,70 +655,104 @@ def score_submission_on_workload(
         'Must provide a tuning search space JSON file when using external '
         'tuning.'
       )
-    
-    if RANK == 0:
-        with open(tuning_search_space, 'r', encoding='UTF-8') as f:
-            full_search_space = halton.generate_search(
-                json.load(f), num_tuning_trials
-            )
-        full_search_space = [h._asdict() for h in full_search_space]
-        obj_list = [full_search_space]
+    if USE_PYTORCH_DDP:
+      if RANK == 0:
+          with open(tuning_search_space, 'r', encoding='UTF-8') as f:
+              full_search_space = halton.generate_search(
+                  json.load(f), num_tuning_trials
+              )
+          full_search_space = [h._asdict() for h in full_search_space]
+          obj_list = [full_search_space]
+      else:
+          obj_list = [None]
+      
+      dist.broadcast_object_list(obj_list, src=0)
+      full_search_space = obj_list[0]
+      # logging.warning(f"hyperparameter space {full_search_space} rank={RANK}")
+      # with open(tuning_search_space, 'r', encoding='UTF-8') as search_space_file:
+      #   tuning_search_space = halton.generate_search(
+      #     json.load(search_space_file), num_tuning_trials
+      #   )
+      all_timings = {}
+      all_metrics = {}
+      tuning_search_space_iter = itertools.islice(
+        enumerate(full_search_space), hparam_start_index, hparam_end_index
+      )
+      for hi, hyperparameters in tuning_search_space_iter:
+        # Generate a new seed from hardware sources of randomness for each trial.
+        if not rng_seed:
+          rng_seed = struct.unpack('I', os.urandom(4))[0]
+        logging.info('Using RNG seed %d', rng_seed)
+        rng = prng.PRNGKey(rng_seed)
+        # Because we initialize the PRNGKey with only a single 32 bit int, in the
+        # Jax implementation this means that rng[0] is all zeros, which means this
+        # could lead to unintentionally reusing the same seed of only rng[0] were
+        # ever used. By splitting the rng into 2, we mix the lower and upper 32
+        # bit ints, ensuring we can safely use either rng[0] or rng[1] as a random
+        # number.
+        rng, _ = prng.split(rng, 2)
+        logging.info(f'--- Tuning run {hi + 1}/{num_tuning_trials} ---')
+
+        tuning_dir_name = None
+        if log_dir is not None:
+
+          tuning_dir_name = os.path.join(log_dir, f'trial_{hi + 1}')
+          logging.info(f'Creating tuning directory at {tuning_dir_name}.')
+          logger_utils.makedir(tuning_dir_name)
+
+          # If existing hyperparameter exists, use saved
+          # hyperparameters for consistency.
+          if RANK == 0:
+              hyperparameters = write_hparams(
+                      hyperparameters, tuning_dir_name
+                  )
+          else:
+              hyperparameters = None
+
+              # ---- 5. Broadcast finalized hyperparameters ----
+          obj = [hyperparameters]
+          dist.broadcast_object_list(obj, src=0)
+          hyperparameters = obj[0]
+          hyperparameters = dict_to_namedtuple(hyperparameters)
     else:
-        obj_list = [None]
-    
-    dist.broadcast_object_list(obj_list, src=0)
-    full_search_space = obj_list[0]
-    # logging.warning(f"hyperparameter space {full_search_space} rank={RANK}")
-    # with open(tuning_search_space, 'r', encoding='UTF-8') as search_space_file:
-    #   tuning_search_space = halton.generate_search(
-    #     json.load(search_space_file), num_tuning_trials
-    #   )
-    all_timings = {}
-    all_metrics = {}
-    tuning_search_space_iter = itertools.islice(
-      enumerate(full_search_space), hparam_start_index, hparam_end_index
-    )
-    for hi, hyperparameters in tuning_search_space_iter:
-      # Generate a new seed from hardware sources of randomness for each trial.
-      if not rng_seed:
-        rng_seed = struct.unpack('I', os.urandom(4))[0]
-      logging.info('Using RNG seed %d', rng_seed)
-      rng = prng.PRNGKey(rng_seed)
-      # Because we initialize the PRNGKey with only a single 32 bit int, in the
-      # Jax implementation this means that rng[0] is all zeros, which means this
-      # could lead to unintentionally reusing the same seed of only rng[0] were
-      # ever used. By splitting the rng into 2, we mix the lower and upper 32
-      # bit ints, ensuring we can safely use either rng[0] or rng[1] as a random
-      # number.
-      rng, _ = prng.split(rng, 2)
-      logging.info(f'--- Tuning run {hi + 1}/{num_tuning_trials} ---')
+      with open(tuning_search_space, 'r', encoding='UTF-8') as search_space_file:
+        tuning_search_space = halton.generate_search(
+          json.load(search_space_file), num_tuning_trials
+        )
+      all_timings = {}
+      all_metrics = {}
+      tuning_search_space_iter = itertools.islice(
+        enumerate(tuning_search_space), hparam_start_index, hparam_end_index
+      )
+      for hi, hyperparameters in tuning_search_space_iter:
+        # Generate a new seed from hardware sources of randomness for each trial.
+        if not rng_seed:
+          rng_seed = struct.unpack('I', os.urandom(4))[0]
+        logging.info('Using RNG seed %d', rng_seed)
+        rng = prng.PRNGKey(rng_seed)
+        # Because we initialize the PRNGKey with only a single 32 bit int, in the
+        # Jax implementation this means that rng[0] is all zeros, which means this
+        # could lead to unintentionally reusing the same seed of only rng[0] were
+        # ever used. By splitting the rng into 2, we mix the lower and upper 32
+        # bit ints, ensuring we can safely use either rng[0] or rng[1] as a random
+        # number.
+        rng, _ = prng.split(rng, 2)
+        logging.info(f'--- Tuning run {hi + 1}/{num_tuning_trials} ---')
 
-      tuning_dir_name = None
-      if log_dir is not None:
+        tuning_dir_name = None
+        if log_dir is not None:
+          tuning_dir_name = os.path.join(log_dir, f'trial_{hi + 1}')
+          logging.info(f'Creating tuning directory at {tuning_dir_name}.')
+          logger_utils.makedir(tuning_dir_name)
 
-        tuning_dir_name = os.path.join(log_dir, f'trial_{hi + 1}')
-        logging.info(f'Creating tuning directory at {tuning_dir_name}.')
-        logger_utils.makedir(tuning_dir_name)
+          # If existing hyperparameter exists, use saved
+          # hyperparameters for consistency.
+          hyperparameters = logger_utils.write_hparams(
+            hyperparameters, tuning_dir_name
+          )
+          tuning_search_space[hi] = hyperparameters
 
-        # If existing hyperparameter exists, use saved
-        # hyperparameters for consistency.
-        if RANK == 0:
-            hyperparameters = write_hparams(
-                    hyperparameters, tuning_dir_name
-                )
-        else:
-            hyperparameters = None
-
-            # ---- 5. Broadcast finalized hyperparameters ----
-        obj = [hyperparameters]
-        dist.broadcast_object_list(obj, src=0)
-        hyperparameters = obj[0]
-        hyperparameters = dict_to_namedtuple(hyperparameters)
-
-
-
-
-      with profiler.profile('Train'):
+    with profiler.profile('Train'):
         if capture_trace:
           logging.info(f'Capturing and saving jax trace to {log_dir}')
           (jax.profiler.start_trace(f'{log_dir}/traces'),)
@@ -744,16 +778,20 @@ def score_submission_on_workload(
         )
         if capture_trace:
           jax.profiler.stop_trace()
-      all_timings[hi] = timing
-      all_metrics[hi] = metrics
-      logging.info(f'Tuning trial {hi + 1}/{num_tuning_trials}')
-      # logging.info(f'Hyperparameters: {full_search_space[hi]}')
-      logging.info(f'Metrics: {all_metrics[hi]}')
-      logging.info(f'Timing: {all_timings[hi]}')
-      num_evals = len(all_metrics[hi]['eval_results'])
-      logging.info(f'Total number of evals: {num_evals}')
-      logging.info('=' * 20)
-    score = min(all_timings.values())
+    all_timings[hi] = timing
+    all_metrics[hi] = metrics
+    logging.info(f'Tuning trial {hi + 1}/{num_tuning_trials}')
+    # logging.info(f'Hyperparameters: {full_search_space[hi]}')
+    logging.info(f'Metrics: {all_metrics[hi]}')
+    logging.info(f'Timing: {all_timings[hi]}')
+    num_evals = len(all_metrics[hi]['eval_results'])
+    logging.info(f'Total number of evals: {num_evals}')
+    logging.info('=' * 20)
+    
+    if USE_PYTORCH_DDP:
+      score = min(all_timings.values())
+    else:
+      score = min(all_timings)
   else:
     if tuning_search_space is not None:
       raise ValueError(

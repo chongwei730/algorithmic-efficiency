@@ -833,8 +833,13 @@ def line_search_armijo(f, xk, pk, gfk, old_fval, args=(), c1=1e-4, alpha0=1, num
         alpha, phi1 = search_forward(phi, phi0, derphi0, c1=c1,
                                            alpha=alpha0, grow=1/factor, shrink=factor, amax=1, num_search=num_search)
     elif search_mode == "bisection":
-         alpha, phi1 = search_bisection(phi, phi0, derphi0, c1=c1,
-                                           old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, num_search=num_search)
+         use_ddp = dist.is_initialized() and dist.get_world_size() > 1
+         if use_ddp:
+            alpha, phi1 = search_bisection_ddp(phi, phi0, derphi0, c1=c1,
+                                            old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, num_search=num_search)
+         else:
+            alpha, phi1 = search_bisection(phi, phi0, derphi0, c1=c1,
+                                            old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, num_search=num_search)
     else:
         alpha, phi1 = scalar_search_armijo(phi, phi0, derphi0, c1=c1,
                                         alpha0=alpha0)
@@ -925,7 +930,7 @@ def search_forward(phi, phi0, derphi0, c1, alpha, grow, shrink, amax, num_search
 
     return alpha, phi_a
 
-def search_bisection(phi, phi0, derphi0, c1,
+def search_bisection_ddp(phi, phi0, derphi0, c1,
                      old_alpha, grow=2.0, shrink=0.5,
                      amax=1, num_search=10):
 
@@ -1093,6 +1098,53 @@ def search_bisection(phi, phi0, derphi0, c1,
 
     # logging.info(f'line search: alpha={alpha}, phi_a={phi_a},rank={rank}')
     # return alpha, phi_a
+
+def search_bisection(phi, phi0, derphi0, c1,
+                     old_alpha, grow=2.0, shrink=0.5,
+                     amax=1, num_search=10):
+
+    alpha = old_alpha
+    phi_a = phi(alpha)
+
+    armijo_old = phi_a <= phi0 + c1 * alpha * derphi0
+    print(armijo_old)
+
+    if armijo_old:
+        for _ in range(num_search): 
+            print(_)
+        
+            new_alpha = alpha * grow
+            if new_alpha >= amax:
+                break
+
+            new_phi = phi(new_alpha)
+
+
+            if new_phi > phi0 + c1 * new_alpha * derphi0:
+                break
+
+    
+            alpha = new_alpha
+            phi_a = new_phi
+
+        return alpha, phi_a
+
+
+    else:
+        for _ in range(num_search): 
+            print(_)
+   
+            new_alpha = alpha * shrink
+            new_phi = phi(new_alpha)
+
+        
+            if new_phi <= phi0 + c1 * new_alpha * derphi0:
+                return new_alpha, new_phi
+
+            alpha = new_alpha
+            phi_a = new_phi
+
+        return alpha, phi_a
 
 
 def search_backtracking(phi, phi0, derphi0, c1, alpha, shrink, num_search):

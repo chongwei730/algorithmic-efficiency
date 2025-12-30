@@ -1,0 +1,9 @@
+submission_name: AdamG
+submission_folder: adamg
+authors: Yijiang Pang
+affiliations: Michigan State University
+version: '1.0'
+ruleset: self-tuning
+framework: PyTorch
+description: >-
+  A submission based on the AdamG optimizer ([Pang et al., 2024](https://arxiv.org/abs/2405.04376)).

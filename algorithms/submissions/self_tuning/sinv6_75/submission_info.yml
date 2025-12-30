@@ -1,0 +1,9 @@
+submission_name: Sinv6 75
+submission_folder: sinv6_75
+authors: Abhinav Moudgil
+affiliations: Mila, Concordia University
+version: '1.0'
+ruleset: self-tuning
+framework: JAX
+description: >-
+  A submission for a task-invariant learned optimizer meta-trained on small tasks. Uses $75$% of the number of steps as target in learned optimizer initialization.

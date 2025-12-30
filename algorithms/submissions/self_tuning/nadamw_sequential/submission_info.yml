@@ -1,0 +1,9 @@
+submission_name: NadamW Sequential
+submission_folder: nadamw_sequential
+authors: George Dahl, Sourabh Medapati, Zack Nado, Rohan Anil, Shankar Krishnan, Naman Agarwal, Priya Kasimbeg, Vlad Feinberg
+affiliations: Google
+version: '1.0'
+ruleset: self-tuning
+framework: JAX
+description: >-
+  Uses NadamW update rule and runs 3 fixed hyperparameter points sequentially. The intention was for these to be the top 3 hyperparameter points found at one third the self-tuning ruleset step budgets.

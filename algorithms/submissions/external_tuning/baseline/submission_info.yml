@@ -1,0 +1,13 @@
+submission_name: Baseline
+submission_folder: baseline
+authors: Algorithms Working Group
+affiliations: MLCommons
+version: '1.0'
+ruleset: external
+framework: JAX
+description: >-
+  Baseline using NadamW ([Dozat,
+  2016](https://openreview.net/forum?id=OM0jvwB8jIp57ZJjtNEZ); [Loshchilov &
+  Hutter, 2019](https://openreview.net/forum?id=Bkg6RiCqY7)) and a linear
+  learning rate warmup followed by a cosine decay ([Dahl et al.,
+  2023](https://arxiv.org/abs/2306.07179)).
