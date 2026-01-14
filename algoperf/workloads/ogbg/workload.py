@@ -4,7 +4,7 @@ import abc
 import itertools
 import math
 from typing import Any, Dict, Optional, Tuple
-
+from absl import logging
 import jax
 
 from algoperf import random_utils as prng
@@ -191,8 +191,15 @@ class BaseOgbgWorkload(spec.Workload):
     total_metrics = None
     num_eval_steps = int(math.ceil(float(num_examples) / global_batch_size))
     # Loop over graph batches in eval dataset.
+    logging.warning(f"EVAL STEPS: {num_eval_steps}")
     for _ in range(num_eval_steps):
+      import numpy as np
       batch = next(self._eval_iters[split])
+      labels = batch["targets"]
+      logging.warning(
+          f"BATCH LABELS: unique={np.unique(labels.detach().cpu().numpy())}, "
+          f"shape={labels.shape}, dtype={labels.dtype}"
+      )
       batch_metrics = self._eval_batch(params, batch, model_state, model_rng)
       total_metrics = (
         batch_metrics

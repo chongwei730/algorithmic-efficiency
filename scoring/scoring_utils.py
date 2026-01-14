@@ -171,32 +171,46 @@ def get_experiment_df(experiment_dir):
   )
 
   for experiment_dir in paths:
-    study_dirs = os.listdir(experiment_dir)
-    for study_dir in study_dirs:
-      workload_dirs = os.listdir(os.path.join(experiment_dir, study_dir))
-      workload_dirs = [
-        w
-        for w in workload_dirs
-        if os.path.isdir(os.path.join(experiment_dir, study_dir, w))
-      ]
-      print(workload_dirs)
-      for workload in workload_dirs:
-        data = {
-          'workload': workload,
-        }
-        logging.info(os.path.join(experiment_dir, study_dir, workload))
-        trial_dirs = [
-          t
-          for t in os.listdir(os.path.join(experiment_dir, study_dir, workload))
-          if re.match(TRIAL_DIR_REGEX, t)
+    # Support two layouts:
+    # 1) experiment_dir/<study>/<workload>/trial_<n>/eval_measurements.csv
+    # 2) experiment_dir/<workload>/trial_<n>/eval_measurements.csv (no study)
+    entries = [
+      e
+      for e in os.listdir(experiment_dir)
+      if os.path.isdir(os.path.join(experiment_dir, e))
+    ]
+
+    for entry in entries:
+      entry_path = os.path.join(experiment_dir, entry)
+      child_entries = os.listdir(entry_path)
+
+      # If this entry contains trial directories directly, treat it as a workload
+      if any(re.match(TRIAL_DIR_REGEX, c) for c in child_entries):
+        study_dir = ''
+        workload_dirs = [entry]
+        base_for_workload = experiment_dir
+      else:
+        # Otherwise, treat this entry as a study and look for workload dirs inside it
+        study_dir = entry
+        base_for_workload = os.path.join(experiment_dir, study_dir)
+        workload_dirs = [
+          w
+          for w in os.listdir(base_for_workload)
+          if os.path.isdir(os.path.join(base_for_workload, w))
         ]
+
+      for workload in workload_dirs:
+        data = {'workload': workload}
+        logging.info(os.path.join(base_for_workload, workload))
+
+        workload_path = os.path.join(base_for_workload, workload)
+        trial_dirs = [
+          t for t in os.listdir(workload_path) if re.match(TRIAL_DIR_REGEX, t)
+        ]
+
         for trial in trial_dirs:
           eval_measurements_filepath = os.path.join(
-            experiment_dir,
-            study_dir,
-            workload,
-            trial,
-            MEASUREMENTS_FILENAME,
+            workload_path, trial, MEASUREMENTS_FILENAME
           )
           try:
             trial_df = pd.read_csv(eval_measurements_filepath)

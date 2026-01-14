@@ -3,10 +3,11 @@
 import contextlib
 import itertools
 from typing import Any, Callable, Dict, Optional, Tuple
-
+from absl import logging
 import jax
 import torch
 import torch.distributed as dist
+import numpy as np
 from jraph import GraphsTuple
 from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -149,7 +150,7 @@ class OgbgWorkload(BaseOgbgWorkload):
       yield batch
 
   def init_model_fn(self, rng: spec.RandomState) -> spec.ModelInitState:
-    torch.random.manual_seed(rng[0])
+    torch.random.manual_seed(rng[0]) # to fix
     model = GNN(
       num_outputs=self._num_outputs,
       hidden_dims=self.hidden_dims,
@@ -247,18 +248,37 @@ class OgbgWorkload(BaseOgbgWorkload):
 
   def _eval_metric(self, labels, logits, masks):
     loss = self.loss_fn(labels, logits, masks)
-    return metrics.EvalMetrics.single_from_model_output(
+    logging.warning(f"LABELLLLL!!!! {np.unique(labels.detach().cpu().numpy())}")
+    labels_np = labels.detach().cpu().numpy()
+    metric_object = metrics.EvalMetrics.single_from_model_output(
       loss=loss['per_example'].cpu().numpy(),
       logits=logits.cpu().numpy(),
-      labels=labels.cpu().numpy(),
+      labels=labels_np,
       mask=masks.cpu().numpy(),
     )
+    logging.warning(f"AFTER: {np.unique(labels_np)}")
+    return metric_object
+  
+    
 
   def _normalize_eval_metrics(
     self, num_examples: int, total_metrics: Dict[str, Any]
   ) -> Dict[str, float]:
     """Normalize eval metrics."""
     del num_examples
+    labels_tuple = total_metrics.mean_average_precision.values['labels']
+
+    labels_all = np.concatenate(
+        [np.asarray(x).reshape(-1) for x in labels_tuple],
+        axis=0,
+    )
+
+    unique_vals = np.unique(labels_all)
+
+    logging.warning(
+        f"[LABEL UNIQUE] n={unique_vals.size}, "
+        f"sample={unique_vals[:50]}"
+    )
     return {k: float(v) for k, v in total_metrics.compute().items()}
 
 

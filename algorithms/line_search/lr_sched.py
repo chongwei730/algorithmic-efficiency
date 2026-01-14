@@ -5,17 +5,13 @@
 # LICENSE file in the root directory of this source tree.
 from collections import deque
 import math
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-import random as _rand
 import random
 import torch
 import numpy as np
-from torch.optim import Adam, SGD
-from typing import Iterable, List, Tuple, Optional
-from torch.nn.utils import vector_to_parameters, parameters_to_vector
 import torch.distributed as dist
 from absl import logging
-
+from torch.nn.functional import cosine_similarity
+import matplotlib.pyplot as plt
 
 class LineSearchScheduler():
     def __init__(self, optimizer, start_lr, model_paras, num_search=16, optimizer_type="SGD", injection=True, search_mode="backtrack"):
@@ -104,6 +100,8 @@ class LineSearchScheduler():
         pg0 = self.optimizer.param_groups[0]
         eps = pg0.get("eps", 1e-8)
         beta1, beta2 = pg0.get("betas", (0.9, 0.999))
+        wd = pg0.get("weight_decay", 0)
+
 
         def rule(p):
             g = p.grad
@@ -116,19 +114,51 @@ class LineSearchScheduler():
                 and "exp_avg_sq" in st
                 and st.get("step", 0) > 0
             ):
+
+      
                 m = st["exp_avg"]
                 v = st["exp_avg_sq"]
-                t = st["step"]
+                t = st["step"] + 1
 
-                # bias correction
-                m_hat = m / (1.0 - beta1 ** t)
-                v_hat = v / (1.0 - beta2 ** t)
+                # mf = m.flatten()
+                # vf = v.flatten()
+                # gf = g.flatten()
 
-                return -m_hat / (v_hat.sqrt() + eps)
+                # logging.warning(
+                #     f"t={t} | "
+                #     f"g[:10]={gf[:10].tolist()} | "
+                #     f"m[:10]={mf[:10].tolist()} | "
+                #     f"v[:10]={vf[:10].tolist()} | "
+                #     f"||g||={gf.norm().item():.3e} | "
+                #     f"||m||={mf.norm().item():.3e} | "
+                #     f"||v||={vf.norm().item():.3e}, t={t}"
+                # )
+                m_new = beta1 * m + (1 - beta1) * g
+                v_new = beta2 * v + (1 - beta2) * (g * g)
+
+                m_hat = m_new / (1 - beta1 ** t)
+                v_hat = v_new / (1 - beta2 ** t)
+
+                return -m_hat / (v_hat.sqrt() + eps) - wd * p
 
             else:
                 if fallback_to_neg_grad:
-                    return -g
+                    g = p.grad
+                    # gf = g.flatten()
+                    # pf = p.flatten()
+
+                    # term1 = g / (g.abs() + eps)      # g-normalized
+                    # term2 = wd * p                  # weight decay term
+                    # df = (term1 - term2).flatten()
+
+                    # logging.warning(
+                    #     f"(g/(|g|+eps) - wd*p)[:10]={df[:10].tolist()} | "
+                    #     f"g_norm[:10]={gf[:10].tolist()} | "
+                    #     f"wd*p[:10]={(wd*pf)[:10].tolist()} | "
+                    #     f"||g_norm||={term1.flatten().norm().item():.3e} | "
+                    #     f"||wd*p||={(wd*pf).norm().item():.3e}"
+                    # )
+                    return - g / (g.abs() + eps) - wd * p
                 else:
                     return torch.zeros_like(p)
         return rule
@@ -138,25 +168,145 @@ class LineSearchScheduler():
         """
         Trial update: p <- p + alpha * rule(p)
         """
+        # max_d = 0.0
+        cached_dirs = {}
         for group in self.optimizer.param_groups:
             for p in group["params"]:
                 if p.grad is None:
+                    # logging.warning("GRADIENT IS NONE!!! at 0")
                     continue
-                p.add_(self.rule(p), alpha=alpha)
+                # d = self.rule(p)
+                # max_d = max(max_d, d.abs().max().item())
+                if self.optimizer.param_groups[0].get("weight_decay", 0) != 0:
+                    # logging.warning("weight decay")
+                    if p not in cached_dirs:
+                        d = self.rule(p).detach().clone()
+                        cached_dirs[p] = d
+                    else:
+                        d = cached_dirs[p]
+                    p.add_(d, alpha=alpha)  
+                else:
+                    # logging.warning("no_weight decay")
+                    p.add_(self.rule(p), alpha=alpha)  
+
+        return cached_dirs
+        # logging.warning(f"[debug] alpha={alpha}, max|d|={max_d}")
 
     @torch.no_grad()
-    def restore_model(self, alpha):
+    def restore_model(self, alpha, cached_dirs):
+        if len(cached_dirs) != 0:
+            for p, d in cached_dirs.items():
+                p.add_(d, alpha=-alpha)
+        else:
+            for group in self.optimizer.param_groups:
+                for p in group["params"]:
+                    d = self.rule(p)
+                    p.add_(d, alpha=-alpha)
+  
+
+
+
+
+    # def check_optimizer_step_vs_rule(self, 
+    #     optimizer,
+    #     rule_fn,
+    #     lr,
+    #     rollback=True,
+    #     prefix="[LineSearchScheduler]"
+    # ):
+    #     """
+    #     Diagnose whether optimizer.step() follows rule_fn direction.
+
+    #     Args:
+    #         optimizer: torch.optim.Optimizer
+    #         rule_fn: callable(p) -> direction tensor (same shape as p)
+    #         lr: current learning rate (scalar)
+    #         rollback: if True, restore parameters after check
+    #         prefix: logging prefix
+
+    #     Logs:
+    #         cosine similarity between actual update direction and rule direction
+    #     """
+    #     params = []
+    #     for group in optimizer.param_groups:
+    #         for p in group["params"]:
+    #             if p.requires_grad:
+    #                 params.append(p)
+
+    #     if len(params) == 0:
+    #         logging.warning(f"{prefix} no parameters found, skip check")
+    #         return
+
+    #     old_params = [p.detach().clone() for p in params]
+
+    #     if rollback:
+    #         opt_state = {
+    #             k: v.copy() if isinstance(v, dict) else v
+    #             for k, v in optimizer.state_dict().items()
+    #         }
+
+    #     rule_dirs = []
+    #     with torch.no_grad():
+    #         for p in params:
+    #             if p.grad is None:
+    #                 continue
+    #             d = rule_fn(p)
+    #             rule_dirs.append(d.detach().flatten())
+
+    #     if len(rule_dirs) == 0:
+    #         logging.warning(f"{prefix} empty rule directions, skip check")
+    #         return
+
+    #     rule_vec = torch.cat(rule_dirs)
+
+    #     optimizer.step()
+
+
+    #     actual_dirs = []
+    #     with torch.no_grad():
+    #         for p, p_old in zip(params, old_params):
+    #             d_actual = (p.detach() - p_old) / lr
+    #             actual_dirs.append(d_actual.flatten())
+
+    #     actual_vec = torch.cat(actual_dirs)
+
+    #     cos = cosine_similarity(
+    #         rule_vec.unsqueeze(0),
+    #         actual_vec.unsqueeze(0),
+    #         dim=1
+    #     ).item()
+
+    #     logging.warning(
+    #         f"{prefix} optimizer-step vs rule cosine = {cos:.6f}"
+    #     )
+
+    #     if rollback:
+    #         for p, p_old in zip(params, old_params):
+    #             p.data.copy_(p_old)
+    #         optimizer.load_state_dict(opt_state)
+    @torch.no_grad()
+    def test_update_restore_max_diff(self, alpha):
         """
-        Exact inverse of update_model
+        Test max parameter difference after:
+            update_model(alpha) -> closure(require_grad=False) -> restore_model(alpha)
+
+        Returns:
+            max |Δparam|
         """
-        for group in self.optimizer.param_groups:
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                p.add_(self.rule(p), alpha=-alpha)
+        params = self.paras
+        backup = [p.detach().clone() for p in params]
 
 
+        cached_dirs = self.update_model(alpha)
+        self.restore_model(alpha, cached_dirs)
 
+        max_diff = 0.0
+        for p, p0 in zip(params, backup):
+            diff = (p.detach() - p0).abs().max().item()
+            max_diff = max(max_diff, diff)
+
+        print(f"[TEST] alpha={alpha:.3e}, max |param diff| = {max_diff:.3e}")
+        return max_diff
 
         
 
@@ -170,24 +320,10 @@ class LineSearchScheduler():
         interval: perform line search every {interval} steps.
         """
 
-        if step % interval != 0:
-            if self.injection:
-                self.original_lrs = [pg['lr'] for pg in self.optimizer.param_groups]  # Save original learning rates
-                injection_factor = random.choice(self.injection_distribution)  # Sample from the predefined distribution
-                for param_group in self.optimizer.param_groups:
-                    param_group['lr'] = param_group['lr'] * injection_factor
-                return
-            else:
-                return
-            
-        is_dist = dist.is_initialized()
-        rank = dist.get_rank() if is_dist else 0
-        device = next((p.device for p in self.paras if p is not None), torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-
-
 
         self.optimizer.zero_grad(set_to_none=True)
         loss = closure(require_grad=True)
+
         inner = 0.0
         with torch.no_grad():
             for group in self.optimizer.param_groups:
@@ -199,12 +335,28 @@ class LineSearchScheduler():
 
         phi0, derphi0 = loss, inner.detach()
 
+        alpha = self.optimizer.param_groups[0]["lr"]
+        # self.test_update_restore_max_diff(alpha=alpha)
+        # self.check_optimizer_step_vs_rule(
+        #     optimizer=self.optimizer,
+        #     rule_fn=self.rule,
+        #     lr=alpha,
+        #     rollback=True
+        # )
+        
+        if derphi0 > 0: 
+            derphi0 =- derphi0
+            logging.warning("ASCENT!!!")
+
+        # xk = [p.detach().clone() for p in self.paras]
+        # gk = [p.grad.detach().clone() if p.grad is not None else None for p in self.paras]
+        @torch.no_grad()
         def phi(alpha):
-            self.update_model(alpha)
-            with torch.no_grad():
-                val = closure(require_grad=False)
-            self.restore_model(alpha)
+            cached_dirs = self.update_model(alpha)
+            val = closure(require_grad=False)
+            self.restore_model(alpha, cached_dirs)
             return val
+    
 
         alpha, fc, _ = line_search_armijo(
                     f=phi,
@@ -218,22 +370,19 @@ class LineSearchScheduler():
                     search_mode=self.search_mode,
                     factor=factor
                 )
-
-
+        
         if alpha is None or not np.isfinite(alpha) or alpha <= 0:
             current_lr = self.optimizer.param_groups[0]["lr"]
             alpha = float(current_lr if np.isfinite(current_lr) and current_lr > 0 else self.start_lr)
 
-
-        
         print(f"[LineSearchScheduler] alpha={alpha:.6g}, fc={fc}")
         
         for param_group in self.optimizer.param_groups:
                 param_group['lr'] = alpha
 
         self.prev_alpha = alpha
-
-
+        self.optimizer.step()
+    
 
 
 
@@ -290,6 +439,9 @@ def line_search_armijo(f, derphi0, phi0, args=(), c1=1e-4, alpha0=1, num_search=
     else:
             alpha, phi1 = search_bisection(phi, phi0, derphi0, c1=c1,
                                             old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, num_search=num_search)
+            # alpha, phi1 = search_backtracking_visual(phi, phi0, derphi0, c1=c1,
+            #                                   alpha=alpha0, shrink=factor, plot_path=f"backtracking_{step}.png")
+            
     
     # if search_mode == "backtrack":
     #     # alpha, phi1 = search_backtracking_visual(phi, phi0, derphi0, c1=c1,
@@ -396,7 +548,6 @@ def search_bisection_ddp(phi, phi0, derphi0, c1,
 
     use_ddp = dist.is_initialized() and dist.get_world_size() > 1
     rank = dist.get_rank() if use_ddp else 0
-    world = dist.get_world_size() if use_ddp else 1
     device = (
         torch.device("cuda")
         if use_ddp
@@ -406,19 +557,19 @@ def search_bisection_ddp(phi, phi0, derphi0, c1,
     phi_a = phi(alpha)
 
     if rank == 0:
-        armijo_old = phi_a <= phi0 + c1 * alpha * derphi0
+        armijo_old_work = phi_a <= phi0 + c1 * alpha * derphi0
     armijo_flag = torch.tensor(
-                [int(armijo_old)] if rank == 0 else [0],
+                [int(armijo_old_work)] if rank == 0 else [0],
                 device=device,
             )
     # logging.warning(f"[rank {rank}]  Before old armijo_broadcast")
     dist.broadcast(armijo_flag, src=0)
     # logging.warning(f"[rank {rank}]  After old armijo_broadcast")
-    armijo_old = bool(armijo_flag.item())
+    armijo_old_work = bool(armijo_flag.item())
 
     # # logging.warning(f'line search: old armijo={armijo_old},rank={rank}')
 
-    if armijo_old:
+    if armijo_old_work:
             for _ in range(num_search): 
             
                 new_alpha = alpha * grow
@@ -502,11 +653,9 @@ def search_bisection(phi, phi0, derphi0, c1,
     phi_a = phi(alpha)
 
     armijo_old = phi_a <= phi0 + c1 * alpha * derphi0
-    print(armijo_old)
 
     if armijo_old:
         for _ in range(num_search): 
-            print(_)
         
             new_alpha = alpha * grow
             if new_alpha >= amax:
@@ -554,65 +703,72 @@ def search_backtracking(phi, phi0, derphi0, c1, alpha, shrink, num_search):
 
 
 
-# def search_backtracking_visual(
-#     phi, phi0, derphi0,
-#     c1, alpha, shrink,
-#     plot_path="backtracking_ls.png",
-#     t_min=0.0, t_max=1.0, num_points=20
-# ):
-#     explored = []  
+def search_backtracking_visual(
+    phi, phi0, derphi0,
+    c1, alpha, shrink,
+    plot_path="backtracking_ls.png",
+    t_min=0.0, t_max=1.0, num_points=30
+):
+    explored = []  
 
-#     # --- Backtracking loop ---
-#     phi_a = phi(alpha)
-#     explored.append((alpha, phi_a))
+    # --- Backtracking loop ---
+    phi_a = phi(alpha)
+    explored.append((alpha, phi_a))
+    count = 0
 
-#     while phi_a > phi0 + c1 * alpha * derphi0:
-#         alpha *= shrink
-#         phi_a = phi(alpha)
-#         explored.append((alpha, phi_a))
+    while phi_a > phi0 + c1 * alpha * derphi0:
+        count += 1
+        if count > 4:
+            break
+        logging.warning(count)
+        
+        alpha *= shrink
+        phi_a = phi(alpha)
+        explored.append((alpha, phi_a))
 
-#     chosen_alpha, chosen_phi = alpha, phi_a
-
-
-#     t_vals = np.linspace(t_min, t_max, num_points)
-#     phi_vals_list = []
-#     for t in t_vals:
-#         value = phi(t)   
-#         phi_vals_list.append(value)
-#     phi_vals = np.array(phi_vals_list)
+    chosen_alpha, chosen_phi = alpha, phi_a
 
 
-#     armijo_line = phi0 + c1 * t_vals * derphi0
+    t_vals = np.linspace(t_min, t_max, num_points)
+    phi_vals_list = []
+    for t in t_vals:
+        value = phi(t)   
+        logging.warning(f"loss {value} at t={t}")
+        phi_vals_list.append(value)
+    phi_vals = np.array(phi_vals_list)
 
 
-#     plt.figure(figsize=(8, 6))
+    armijo_line = phi0 + c1 * t_vals * derphi0.item()
 
 
-#     plt.plot(t_vals, phi_vals, label="phi(t)", linewidth=2)
+    plt.figure(figsize=(8, 6))
 
 
-#     plt.plot(t_vals, armijo_line, "--", label="Armijo line", linewidth=2)
+    plt.plot(t_vals, phi_vals, label="phi(t)", linewidth=2)
 
 
-#     for i, (a, v) in enumerate(explored):
-#         plt.scatter(a, v, color="red", s=60)
-#         if i == 0:
-#             plt.annotate("init", (a, v), textcoords="offset points", xytext=(5, 5))
-#         else:
-#             plt.annotate(f"bt {i}", (a, v), textcoords="offset points", xytext=(5, 5))
+    plt.plot(t_vals, armijo_line, "--", label="Armijo line", linewidth=2)
+
+
+    for i, (a, v) in enumerate(explored):
+        plt.scatter(a, v, color="red", s=60)
+        if i == 0:
+            plt.annotate("init", (a, v), textcoords="offset points", xytext=(5, 5))
+        else:
+            plt.annotate(f"bt {i}", (a, v), textcoords="offset points", xytext=(5, 5))
 
     
-#     plt.scatter(chosen_alpha, chosen_phi, color="blue", s=120, marker="x", label="chosen alpha")
+    plt.scatter(chosen_alpha, chosen_phi, color="blue", s=120, marker="x", label="chosen alpha")
 
-#     # labels
-#     plt.xlabel("t (step size)")
-#     plt.ylabel("phi(t)")
-#     plt.title("Backtracking Line Search Visualization")
-#     plt.grid(True)
-#     plt.legend()
+    # labels
+    plt.xlabel("t (step size)")
+    plt.ylabel("phi(t)")
+    plt.title("Backtracking Line Search Visualization")
+    plt.grid(True)
+    plt.legend()
 
-#     # Save
-#     plt.savefig(plot_path, dpi=200)
-#     plt.close()
+    # Save
+    plt.savefig(plot_path, dpi=200)
+    plt.close()
 
-#     return chosen_alpha, chosen_phi, 
+    return chosen_alpha, chosen_phi

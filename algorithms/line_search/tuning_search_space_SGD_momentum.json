@@ -16,8 +16,8 @@
     "scaling": "log"
   },
   "c1": {
-    "min": 1e-4,
-    "max": 1,
+    "min": 1e-5,
+    "max": 0.9,
     "scaling": "log" 
   },
     "interval": {

@@ -26,6 +26,13 @@ class Test(absltest.TestCase):
     df = scoring_utils.get_experiment_df(TEST_DIR)
     assert df is not None
 
+  def test_get_experiment_df_no_study(self):
+    import os
+    test_dir = os.path.join(os.path.dirname(__file__), 'test_data', 'experiment_dir_no_study')
+    df = scoring_utils.get_experiment_df(test_dir)
+    assert df is not None
+    assert 'mnist_jax' in df['workload'].values or df.shape[0] > 0
+
 
 if __name__ == '__main__':
   absltest.main()

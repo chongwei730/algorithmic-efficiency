@@ -89,7 +89,7 @@ def update_params(
             rank = dist.get_rank()
   else:
             world, rank = 1, 0
-
+  # torch.cuda.reset_peak_memory_stats()
   current_model = current_param_container
   current_model.train()
   optimizer_state['optimizer'].zero_grad()
@@ -104,10 +104,9 @@ def update_params(
 
   if global_step % line_search_interval == 0:
     def closure(require_grad=False):
-      optimizer_state['optimizer'].zero_grad()
       device = next(current_model.parameters()).device
       total_loss_t = torch.zeros((), device=device)
-
+                   
       for b in batch:
         logits_batch, new_model_state = workload.model_fn(
             params=current_model,
@@ -131,9 +130,6 @@ def update_params(
           label_smoothing=label_smoothing,
         )
 
-
-
-
         loss = loss_dict["summed"] / loss_dict["n_valid_examples"]
       
 
@@ -151,7 +147,6 @@ def update_params(
         dist.all_reduce(avg_loss_t, op=dist.ReduceOp.SUM)
         # logging.warning(f"[rank {rank}] iter {global_step} After closure_all_reduce")
         avg_loss_t /= dist.get_world_size()
-
       #####
 
 
@@ -179,8 +174,6 @@ def update_params(
 
     for pg in optimizer_state['optimizer'].param_groups:
             pg['lr'] = alpha.item()
-
-    
 
 
     batch = batch[0]
@@ -256,6 +249,13 @@ def update_params(
       loss.item(),
       grad_norm.item(),
     )
+  # torch.cuda.synchronize()
+  # peak_alloc = torch.cuda.max_memory_allocated() / 1024**2
+  # peak_reserved = torch.cuda.max_memory_reserved() / 1024**2
+
+  # logging.warning(
+  #     f"[PEAK] allocated={peak_alloc:.1f}MB | reserved={peak_reserved:.1f}MB"
+  # )
   
 
   return (optimizer_state, current_param_container, new_model_state)

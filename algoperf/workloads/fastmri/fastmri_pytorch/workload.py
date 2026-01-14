@@ -221,6 +221,11 @@ class FastMRIWorkload(BaseFastMRIWorkload):
     if weights is None:
       weights = torch.ones(len(outputs), device=DEVICE)
     weights_sum = weights.sum().to(torch.int)
+    if weights_sum == 0:
+      return {
+          'ssim': torch.tensor(0.0, device=DEVICE),
+          'loss': torch.tensor(0.0, device=DEVICE),
+      }
     ssim_sum = ssim(
       outputs[:weights_sum],
       targets[:weights_sum],

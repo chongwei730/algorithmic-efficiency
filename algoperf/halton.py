@@ -11,7 +11,7 @@ import functools
 import itertools
 import math
 from typing import Any, Callable, Dict, List, Sequence, Tuple, Union
-
+import numpy as np
 from absl import logging
 from numpy import random
 
@@ -97,7 +97,7 @@ Matrix = List[List[int]]
 def generate_sequence(
   num_samples: int,
   num_dims: int,
-  skip: int = 100,
+  skip: int = 200,
   per_dim_shift: bool = True,
   shuffle_sequence: bool = True,
   primes: Sequence[int] = None,
@@ -353,6 +353,9 @@ def generate_search(
     A list of length `num_trials` of namedtuples, each of which has attributes
     corresponding to the given hyperparameters, and values randomly sampled.
   """
+
+  random.seed(2)
+  np.random.seed(2)
   if isinstance(search_space, dict):
     all_hyperparameter_names = list(search_space.keys())
   elif isinstance(search_space, list):

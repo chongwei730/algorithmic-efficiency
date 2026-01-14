@@ -25,6 +25,8 @@ wandb/
 *.txt
 scoring/plots/
 datasets/dataset_setup.py
+/gpu_logs
+/exp_log
 
 !scoring/test_data/experiment_dir/study_0/mnist_jax/trial_0/eval_measurements.csv
 !scoring/test_data/experiment_dir/study_0/mnist_jax/trial_1/eval_measurements.csv

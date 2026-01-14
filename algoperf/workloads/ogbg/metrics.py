@@ -10,7 +10,7 @@ import torch
 import torch.distributed as dist
 from clu import metrics
 from sklearn.metrics import average_precision_score
-
+from absl import logging
 from algoperf.pytorch_utils import pytorch_setup
 
 USE_PYTORCH_DDP, RANK, DEVICE, N_GPUS = pytorch_setup()
@@ -40,20 +40,36 @@ class MeanAveragePrecision(
     sigmoid = jax.nn.sigmoid
 
     if USE_PYTORCH_DDP:
-      # Sync labels, logits, and masks across devices.
-      all_values = [labels, logits, mask]
-      for idx, array in enumerate(all_values):
-        tensor = torch.as_tensor(array, device=DEVICE)
-        # Assumes that the tensors on all devices have the same shape.
-        all_tensors = [torch.zeros_like(tensor) for _ in range(N_GPUS)]
-        dist.all_gather(all_tensors, tensor)
-        all_values[idx] = torch.cat(all_tensors).cpu().numpy()
-      labels, logits, mask = all_values
+        import torch
+        import torch.distributed as dist
+        import numpy as np
 
-      def sigmoid_np(x):
-        return 1 / (1 + np.exp(-x))
+        world = dist.get_world_size()
 
-      sigmoid = sigmoid_np
+
+        labels_t = torch.from_numpy(np.asarray(labels, dtype=np.float32, order="C")).to(DEVICE).contiguous()
+        logits_t = torch.from_numpy(np.asarray(logits, dtype=np.float32, order="C")).to(DEVICE).contiguous()
+
+        # mask: bool -> uint8（0/1）
+        mask_u8_t = torch.from_numpy(np.asarray(mask, dtype=np.uint8, order="C")).to(DEVICE).contiguous()
+
+   
+        def gather_cat(t: torch.Tensor) -> torch.Tensor:
+            outs = [torch.empty_like(t) for _ in range(world)]
+            dist.all_gather(outs, t)
+            return torch.cat(outs, dim=0)
+
+        labels = gather_cat(labels_t).cpu().numpy()
+        logits = gather_cat(logits_t).cpu().numpy()
+        mask_u8 = gather_cat(mask_u8_t).cpu().numpy()
+
+
+        mask = (mask_u8 != 0)
+
+        def sigmoid_np(x):
+          return 1 / (1 + np.exp(-x))
+
+        sigmoid = sigmoid_np
 
     mask = mask.astype(bool)
 

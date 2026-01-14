@@ -24,51 +24,6 @@ USE_PYTORCH_DDP = pytorch_setup()[0]
 
 
 
-# def infer_device_from_model(model):
-#     try:
-#         return next(model.parameters()).device
-#     except StopIteration:
-#         return torch.device("cpu")
-
-# def infer_device_from_batch(b):
-#     # 返回第一个探测到的 tensor 的 device；找不到就返回 None
-#     if torch.is_tensor(b):
-#         return b.device
-#     if isinstance(b, dict):
-#         for v in b.values():
-#             d = infer_device_from_batch(v)
-#             if d is not None:
-#                 return d
-#         return None
-#     # PyG 的 Data/Batch 通常有 .to()，但不保证有 .device
-#     # 常见字段：x, edge_index, edge_attr, y, pos, ...
-#     for attr in ("x", "edge_index", "edge_attr", "y", "pos"):
-#         if hasattr(b, attr):
-#             t = getattr(b, attr)
-#             if torch.is_tensor(t):
-#                 return t.device
-#     # 列表/元组等容器
-#     if isinstance(b, (list, tuple)):
-#         for v in b:
-#             d = infer_device_from_batch(v)
-#             if d is not None:
-#                 return d
-#     return None
-
-# def safe_batch_to_device(b, device):
-#     if hasattr(b, "to"):
-#         try:
-#             return b.to(device)
-#         except Exception:
-#             pass
-#     if torch.is_tensor(b):
-#         return b.to(device)
-#     if isinstance(b, dict):
-#         return {k: safe_batch_to_device(v, device) for k, v in b.items()}
-#     if isinstance(b, (list, tuple)):
-#         conv = [safe_batch_to_device(v, device) for v in b]
-#         return type(b)(conv) if isinstance(b, tuple) else conv
-#     return b
 
 
 def init_optimizer_state(
@@ -141,7 +96,6 @@ def update_params(
   device = next(current_model.parameters()).device
 
   line_search_interval = int(round(hyperparameters.interval * workload.step_hint))
-  line_search_interval = 1
   # # logging.warning(f"step_hint {workload.step_hint} rank={rank}")
   # # logging.warning(f"hyperparameters.interval {hyperparameters.interval} rank={rank}")
   # # logging.warning(f"interval {line_search_interval} rank={rank}")
@@ -208,13 +162,13 @@ def update_params(
 
     scheduler = optimizer_state['scheduler']
     start_time = time.time()
-    # scheduler.step(
-    #             closure,
-    #             c1=hyperparameters.c1,
-    #             step=global_step,
-    #             interval=line_search_interval,
-    #             condition="armijo",
-    #         )
+    scheduler.step(
+                closure,
+                c1=hyperparameters.c1,
+                step=global_step,
+                interval=line_search_interval,
+                condition="armijo",
+            )
     elapsed = time.time() - start_time
     print(f"[LineSearch] {accum_steps} step took {elapsed:.4f} seconds")
     alpha = torch.tensor([scheduler.prev_alpha], device='cuda')
@@ -345,7 +299,7 @@ def get_batch_size(workload_name):
   elif workload_name == 'imagenet_resnet_gelu':
     return 512
   elif workload_name == 'imagenet_vit':
-    return 32
+    return 1024
   elif workload_name == 'librispeech_conformer':
     return 256
   elif workload_name == 'librispeech_deepspeech':
@@ -382,8 +336,7 @@ def data_selection(
   # del global_step
   del rng
 
-  # line_search_interval = int(round(hyperparameters.interval * workload.step_hint))
-  line_search_interval = 1
+  line_search_interval = int(round(hyperparameters.interval * workload.step_hint))
   if global_step % line_search_interval != 0:
     batch = next(input_queue)
   else:

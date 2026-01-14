@@ -367,6 +367,7 @@ def train_once(
     and not goals_reached
     and not train_state['training_complete']
   ):
+    break
     step_rng = prng.fold_in(rng, global_step)
 
     data_select_rng, update_rng, prep_eval_rng, eval_rng = prng.split(
@@ -678,6 +679,10 @@ def score_submission_on_workload(
       tuning_search_space_iter = itertools.islice(
         enumerate(full_search_space), hparam_start_index, hparam_end_index
       )
+
+      logging.warning(f"FULL TUNING SPACE {full_search_space}")
+      logging.warning(f"hpara_start_index {hparam_start_index}")
+      logging.warning(f"tuning_search_iter: {tuning_search_space_iter}")
       for hi, hyperparameters in tuning_search_space_iter:
         # Generate a new seed from hardware sources of randomness for each trial.
         if not rng_seed:
@@ -724,6 +729,10 @@ def score_submission_on_workload(
       tuning_search_space_iter = itertools.islice(
         enumerate(tuning_search_space), hparam_start_index, hparam_end_index
       )
+
+      logging.warning(f"FULL TUNING SPACE {full_search_space}")
+      logging.warning(f"hpara_start_index {hparam_start_index}")
+      logging.warning(f"tuning_search_iter: {tuning_search_space_iter}")
       for hi, hyperparameters in tuning_search_space_iter:
         # Generate a new seed from hardware sources of randomness for each trial.
         if not rng_seed:
@@ -933,7 +942,5 @@ if __name__ == '__main__':
   flags.mark_flag_as_required('experiment_dir')
   flags.mark_flag_as_required('experiment_name')
   app.run(main)
-
-
 
 
