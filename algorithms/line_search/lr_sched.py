@@ -307,6 +307,15 @@ class LineSearchScheduler():
 
         print(f"[TEST] alpha={alpha:.3e}, max |param diff| = {max_diff:.3e}")
         return max_diff
+    
+
+    def clear_momentum(self):
+        for group in self.optimizer.param_groups:
+            for p in group['params']:
+                state = self.optimizer.state.get(p, {})
+                if 'exp_avg' in state:
+                    state['exp_avg'].zero_()
+                    
 
         
 
@@ -331,7 +340,7 @@ class LineSearchScheduler():
                         if p.grad is None:
                             continue
                         d = self.rule(p)       
-                        inner += torch.sum(p.grad * d)
+                        inner += torch.dot(p.grad.flatten(), d.flatten())
 
         phi0, derphi0 = loss, inner.detach()
 
@@ -345,8 +354,19 @@ class LineSearchScheduler():
         # )
         
         if derphi0 > 0: 
-            derphi0 =- derphi0
-            logging.warning("ASCENT!!!")
+            self.clear_momentum()
+            logging.warning(f"ASCENT!!!, old derphi0 {derphi0}")
+            inner = 0.0
+            with torch.no_grad():
+                for group in self.optimizer.param_groups:
+                        for p in group["params"]:
+                            if p.grad is None:
+                                continue
+                            d = self.rule(p)       
+                            inner += torch.dot(p.grad.flatten(), d.flatten())
+
+            phi0, derphi0 = loss, inner.detach()
+            logging.warning(f"ASCENT!!!, new derphi0 {derphi0}")
 
         # xk = [p.detach().clone() for p in self.paras]
         # gk = [p.grad.detach().clone() if p.grad is not None else None for p in self.paras]
@@ -433,6 +453,7 @@ def line_search_armijo(f, derphi0, phi0, args=(), c1=1e-4, alpha0=1, num_search=
         return value
 
     use_ddp = dist.is_initialized() and dist.get_world_size() > 1
+    logging.warning(f"USE DDP {use_ddp}")
     if use_ddp:
             alpha, phi1 = search_bisection_ddp(phi, phi0, derphi0, c1=c1,
                                             old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, num_search=num_search)
