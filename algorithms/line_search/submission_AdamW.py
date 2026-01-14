@@ -101,84 +101,86 @@ def update_params(
   # # logging.warning(f"hyperparameters.interval {hyperparameters.interval} rank={rank}")
   # # logging.warning(f"interval {line_search_interval} rank={rank}")
   
-
+  closure = None
   if global_step % line_search_interval == 0:
-    def closure(require_grad=False):
-      device = next(current_model.parameters()).device
-      total_loss_t = torch.zeros((), device=device)
-                   
-      for b in batch:
-        logits_batch, new_model_state = workload.model_fn(
-            params=current_model,
-            augmented_and_preprocessed_input_batch=b,
-            model_state=model_state,
-            mode=spec.ForwardPassMode.TRAIN,
-            rng=rng,
-            update_batch_norm=True,
-            dropout_rate=hyperparameters.dropout_rate,
+    batch_ls = batch
+    def make_closure():
+      def closure(require_grad=False, batch=batch_ls):
+        device = next(current_model.parameters()).device
+        total_loss_t = torch.zeros((), device=device)
+                    
+        for b in batch:
+          logits_batch, new_model_state = workload.model_fn(
+              params=current_model,
+              augmented_and_preprocessed_input_batch=b,
+              model_state=model_state,
+              mode=spec.ForwardPassMode.TRAIN,
+              rng=rng,
+              update_batch_norm=True,
+              dropout_rate=hyperparameters.dropout_rate,
+            )
+          label_smoothing = (
+            hyperparameters.label_smoothing
+            if hasattr(hyperparameters, 'label_smoothing')
+            else 0.0
           )
-        label_smoothing = (
-          hyperparameters.label_smoothing
-          if hasattr(hyperparameters, 'label_smoothing')
-          else 0.0
-        )
 
-        loss_dict = workload.loss_fn(
-          label_batch=b['targets'],
-          logits_batch=logits_batch,
-          mask_batch=b.get('weights'),
-          label_smoothing=label_smoothing,
-        )
+          loss_dict = workload.loss_fn(
+            label_batch=b['targets'],
+            logits_batch=logits_batch,
+            mask_batch=b.get('weights'),
+            label_smoothing=label_smoothing,
+          )
 
-        loss = loss_dict["summed"] / loss_dict["n_valid_examples"]
-      
+          loss = loss_dict["summed"] / loss_dict["n_valid_examples"]
+        
 
-        # total_loss += loss.item()
-        if require_grad:
-          (loss / accum_steps).backward() 
+          # total_loss += loss.item()
+          if require_grad:
+            (loss / accum_steps).backward() 
 
-        total_loss_t = total_loss_t + loss.detach()
-      
-      avg_loss_t = total_loss_t / accum_steps
+          total_loss_t = total_loss_t + loss.detach()
+        
+        avg_loss_t = total_loss_t / accum_steps
 
 
-      if dist.is_initialized():
-        # logging.warning(f"[rank {rank}] iter {global_step} Before closure_all_reduce")
-        dist.all_reduce(avg_loss_t, op=dist.ReduceOp.SUM)
-        # logging.warning(f"[rank {rank}] iter {global_step} After closure_all_reduce")
-        avg_loss_t /= dist.get_world_size()
-      #####
+        if dist.is_initialized():
+          # logging.warning(f"[rank {rank}] iter {global_step} Before closure_all_reduce")
+          dist.all_reduce(avg_loss_t, op=dist.ReduceOp.SUM)
+          # logging.warning(f"[rank {rank}] iter {global_step} After closure_all_reduce")
+          avg_loss_t /= dist.get_world_size()
+        #####
 
 
-      print(f"[closure] rank={rank}/{world} is running forward+backward, loss={avg_loss_t}")
-      #####
+        print(f"[closure] rank={rank}/{world} is running forward+backward, loss={avg_loss_t}")
+        #####
 
-      return avg_loss_t.item()
-    
+        return avg_loss_t.item()
+      return closure
+    closure = make_closure()
 
-    scheduler = optimizer_state['scheduler']
-    start_time = time.time()
-    scheduler.step(
+    # alpha = torch.tensor([scheduler.prev_alpha], device='cuda')
+
+    # if dist.is_initialized():
+    #         dist.broadcast(alpha, src=0)
+
+    # for pg in optimizer_state['optimizer'].param_groups:
+    #         pg['lr'] = alpha.item()
+
+
+    batch = batch[0]
+
+  # logging.warning(f"[rank {rank}] iter {global_step} before model_fn")
+
+
+  scheduler = optimizer_state['scheduler']
+  scheduler.step(
                 closure,
                 c1=hyperparameters.c1,
                 step=global_step,
                 interval=line_search_interval,
                 condition="armijo",
             )
-    elapsed = time.time() - start_time
-    print(f"[LineSearch] {accum_steps} step took {elapsed:.4f} seconds")
-    alpha = torch.tensor([scheduler.prev_alpha], device='cuda')
-
-    # if dist.is_initialized():
-    #         dist.broadcast(alpha, src=0)
-
-    for pg in optimizer_state['optimizer'].param_groups:
-            pg['lr'] = alpha.item()
-
-
-    batch = batch[0]
-
-  # logging.warning(f"[rank {rank}] iter {global_step} before model_fn")
 
   logits_batch, new_model_state = workload.model_fn(
     params=current_model,

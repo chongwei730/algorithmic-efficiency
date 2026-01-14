@@ -328,6 +328,18 @@ class LineSearchScheduler():
         c2: parameter for wolfe-condition
         interval: perform line search every {interval} steps.
         """
+        k = step % interval 
+        if k != 0: 
+            alpha = self.optimizer.param_groups[0]["lr"] 
+            if alpha > self.prev_alpha: 
+                for param_group in self.optimizer.param_groups: 
+                    param_group['lr'] = self.prev_alpha 
+                    return 
+            warmup_frac = (k + 1) / interval 
+            lr = warmup_frac * self.prev_alpha 
+            for param_group in self.optimizer.param_groups: 
+                param_group['lr'] = lr 
+            return
 
 
         self.optimizer.zero_grad(set_to_none=True)
