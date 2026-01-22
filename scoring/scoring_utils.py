@@ -253,4 +253,7 @@ def get_workload_metrics_and_targets(workload, split='validation'):
   elif split == 'test':
     metric = f'test/{metric_name}'
     target = workload_obj.test_target_value
+  elif split == 'train':
+    metric = f'train/{metric_name}'
+    target = 0
   return metric, target

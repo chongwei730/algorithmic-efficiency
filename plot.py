@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 # CONFIG
 # ============================================================
 
-# BASE_DIR = "/scratch.global/chen8596/mlcommons_experiments/"
+# BASE_DIR = "/scratch.global/chen8596/mlcommons_experiments_test/"
 BASE_DIR = "./test"
 TRIAL_GLOB = "trial_*"
 

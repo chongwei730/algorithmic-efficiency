@@ -146,14 +146,15 @@ WORKLOADS = {
 }
 
 BASE_WORKLOADS = [
-  'criteo1tb',
+  # 'criteo1tb',
   'fastmri',
-  'imagenet_resnet',
-  'imagenet_vit',
-  'librispeech_conformer',
-  'librispeech_deepspeech',
+  'cifar',
+  # 'imagenet_resnet',
+  # 'imagenet_vit',
+  # 'librispeech_conformer',
+  # 'librispeech_deepspeech',
   'ogbg',
-  'wmt',
+  # 'wmt',
 ]
 
 

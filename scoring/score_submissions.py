@@ -154,6 +154,24 @@ def get_summary_df(workload, workload_df, include_test_split=False):
       axis=1,
     )
 
+    if 'train/loss' in workload_df.columns:
+      train_metric, train_target = scoring_utils.get_workload_metrics_and_targets(
+        workload, split='train'
+      )
+      summary_df['final train loss'] = workload_df['train/loss'].apply(
+        lambda x: x[-1]
+      )
+      summary_df['best train loss'] = workload_df['train/loss'].apply(
+        lambda x: np.min(x)
+      )
+
+      summary_df['final train accuracy'] = workload_df[train_metric].apply(
+        lambda x: x[-1] 
+      )
+      summary_df['best train accuracy'] = workload_df[test_metric].apply(
+        lambda x: np.max(x)
+      )
+
   return summary_df
 
 

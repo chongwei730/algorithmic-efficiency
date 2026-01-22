@@ -12,6 +12,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from algoperf import spec
 from algoperf.pytorch_utils import pytorch_setup
 
+
 USE_PYTORCH_DDP = pytorch_setup()[0]
 
 

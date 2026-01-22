@@ -21,7 +21,8 @@ import jax
 from jax import lax
 import jax.numpy as jnp
 import optax
-
+from absl import logging
+import torch
 from algoperf import spec
 
 _GRAD_CLIP_EPS = 1e-6
@@ -289,7 +290,6 @@ def update_params(workload: spec.Workload,
                                label_smoothing)
   new_optimizer_state, new_params, new_model_state, loss, grad_norm = outputs
 
-  # Log loss, grad_norm.
   if global_step % 100 == 0 and workload.metrics_logger is not None:
     workload.metrics_logger.append_scalar_metrics(
         {
@@ -297,6 +297,7 @@ def update_params(workload: spec.Workload,
             'grad_norm': grad_norm[0],
         }, global_step)
   return (new_optimizer_state, opt_update_fn), new_params, new_model_state
+
 
 
 def get_batch_size(workload_name):
