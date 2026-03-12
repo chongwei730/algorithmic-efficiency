@@ -9,7 +9,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from algoperf import spec
 from algoperf.pytorch_utils import pytorch_setup
-from .lr_sched_test_decay import LineSearchScheduler
+from .lr_sched_less_search import LineSearchScheduler
 import time
 
 
@@ -77,6 +77,7 @@ def update_params(
   eval_results: List[Tuple[int, float]],
   global_step: int,
   rng: spec.RandomState,
+  log_dir: Optional[str] = None,
   train_state: Optional[Dict[str, Any]] = None,
 ) -> spec.UpdateReturn:
   """Return (updated_optimizer_state, updated_params, updated_model_state)."""
@@ -101,7 +102,8 @@ def update_params(
   # # logging.warning(f"hyperparameters.interval {hyperparameters.interval} rank={rank}")
   # # logging.warning(f"interval {line_search_interval} rank={rank}")
   closure = None
-  if global_step % line_search_interval == 0:
+  warmup_length = int(0.01 * workload.step_hint)
+  if global_step % line_search_interval == 0 or global_step == warmup_length:
     batch_ls = batch
     def make_closure():
       def closure(require_grad=False, batch=batch_ls):
@@ -170,11 +172,9 @@ def update_params(
     # for pg in optimizer_state['optimizer'].param_groups:
     #         pg['lr'] = alpha.item()
 
-
     batch = batch[0]
 
   # logging.warning(f"[rank {rank}] iter {global_step} before model_fn")
-
 
   scheduler = optimizer_state['scheduler']
   scheduler.step(
@@ -183,6 +183,8 @@ def update_params(
                 step=global_step,
                 interval=line_search_interval,
                 condition="armijo",
+                warmup_length=warmup_length,
+                log_dir=log_dir
             )
 
   logits_batch, new_model_state = workload.model_fn(
@@ -331,6 +333,7 @@ def data_selection(
   hyperparameters: spec.Hyperparameters,
   global_step: int,
   rng: spec.RandomState,
+  log_dir: Optional[str] = None
 ) -> Dict[str, spec.Tensor]:
   """Select data from the infinitely repeating, pre-shuffled input queue.
   Each element of the queue is a batch of training examples and labels.
@@ -344,8 +347,8 @@ def data_selection(
   del rng
 
   line_search_interval = int(round(hyperparameters.interval * workload.step_hint))
-
-  if global_step % line_search_interval != 0:
+  warmup_length = int(0.01 * workload.step_hint)
+  if global_step % line_search_interval != 0 and global_step != warmup_length:
     batch = next(input_queue)
   else:
     n_search_batches = getattr(hyperparameters, "accum_steps", 4)

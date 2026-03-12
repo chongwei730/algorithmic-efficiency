@@ -84,7 +84,7 @@ class BaseImagenetVitWorkload(BaseImagenetResNetWorkload):
 
   @property
   def eval_batch_size(self) -> int:
-    return 2048
+    return 1024
 
   @property
   def max_allowed_runtime_sec(self) -> int:
@@ -92,7 +92,7 @@ class BaseImagenetVitWorkload(BaseImagenetResNetWorkload):
 
   @property
   def eval_period_time_sec(self) -> int:
-    return 7 * 60  # 7 mins.
+    return 30 * 60  # 7 mins.
 
   def _build_dataset(
     self,

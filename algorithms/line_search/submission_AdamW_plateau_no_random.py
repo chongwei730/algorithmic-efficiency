@@ -9,7 +9,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from algoperf import spec
 from algoperf.pytorch_utils import pytorch_setup
-from .lr_sched_test_decay import LineSearchScheduler
+from .lr_sched_test_adam_plateau_no_random import LineSearchScheduler
 import time
 
 
@@ -77,6 +77,7 @@ def update_params(
   eval_results: List[Tuple[int, float]],
   global_step: int,
   rng: spec.RandomState,
+  log_dir: Optional[str] = None,
   train_state: Optional[Dict[str, Any]] = None,
 ) -> spec.UpdateReturn:
   """Return (updated_optimizer_state, updated_params, updated_model_state)."""
@@ -101,7 +102,11 @@ def update_params(
   # # logging.warning(f"hyperparameters.interval {hyperparameters.interval} rank={rank}")
   # # logging.warning(f"interval {line_search_interval} rank={rank}")
   closure = None
-  if global_step % line_search_interval == 0:
+  
+  warmup_length = int(0.01 * workload.step_hint)
+  is_plateau = False
+  logging.warning(f"AWDAWD {type(batch)}")
+  if type(batch) == list:
     batch_ls = batch
     def make_closure():
       def closure(require_grad=False, batch=batch_ls):
@@ -170,11 +175,12 @@ def update_params(
     # for pg in optimizer_state['optimizer'].param_groups:
     #         pg['lr'] = alpha.item()
 
-
     batch = batch[0]
+    if global_step % line_search_interval != 0 and global_step != warmup_length:
+       is_plateau = True
+    logging.warning(f"is_plateau {is_plateau}")
 
   # logging.warning(f"[rank {rank}] iter {global_step} before model_fn")
-
 
   scheduler = optimizer_state['scheduler']
   scheduler.step(
@@ -183,6 +189,9 @@ def update_params(
                 step=global_step,
                 interval=line_search_interval,
                 condition="armijo",
+                warmup_length=warmup_length,
+                log_dir=log_dir,
+                is_plateau=is_plateau
             )
 
   logits_batch, new_model_state = workload.model_fn(
@@ -321,6 +330,164 @@ def get_batch_size(workload_name):
     return 512
   else:
     raise ValueError(f'Unsupported workload name: {workload_name}.')
+  
+from dataclasses import dataclass
+import os
+import csv
+import math
+
+@dataclass
+class PlateauState:
+    best: float | None = None
+    num_bad_steps: int = 0
+    last_reduce_step: int = -10**18
+    last_seen_len: int = 0
+    last_seen_last_value: float | None = None
+    last_checked_step: int = -1
+    last_result: bool = False
+
+STATE = PlateauState()
+
+def check_reduce_plateau(
+    log_dir,
+    patience,
+    global_step,
+    cooldown=0,
+    mode="min",
+):
+    """
+    Return True iff a ReduceLROnPlateau-style trigger should fire.
+
+    Properties:
+    - State-based (not CSV-history-based)
+    - Edge-triggered (fires once per plateau event)
+    - Only advances when CSV gains a new observation
+    - Idempotent within the same global_step
+    """
+
+
+    # ------------------------------------------------------------
+    # 0. Idempotent: same step checked twice → same result
+    # ------------------------------------------------------------
+    if STATE.last_checked_step == global_step:
+        return STATE.last_result
+
+    result = False  # default
+
+    # ------------------------------------------------------------
+    # 1. Read CSV
+    # ------------------------------------------------------------
+    path = os.path.join(log_dir, "measurements.csv")
+    try:
+        with open(path, newline="") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames is None:
+                goto_return = True
+                raise StopIteration
+
+            values = []
+            for row in reader:
+                try:
+                    v = float(row.get("train/loss"))
+                    if math.isfinite(v):
+                        values.append(v)
+                except Exception:
+                    continue
+    except Exception:
+        goto_return = True
+        STATE.last_checked_step = global_step
+        STATE.last_result = False
+        return False
+
+    # ------------------------------------------------------------
+    # 2. Only advance on *new observation*
+    # ------------------------------------------------------------
+    curr_len = len(values)
+    curr_last = values[-1] if values else None
+
+    if (
+        curr_len == STATE.last_seen_len
+        and curr_last == STATE.last_seen_last_value
+    ):
+        STATE.last_checked_step = global_step
+        STATE.last_result = False
+        return False
+
+    # Mark this observation as consumed
+    STATE.last_seen_len = curr_len
+    STATE.last_seen_last_value = curr_last
+
+    # ------------------------------------------------------------
+    # 3. Need enough data
+    # ------------------------------------------------------------
+    if len(values) < patience + 1:
+        STATE.last_checked_step = global_step
+        STATE.last_result = False
+        return False
+
+    # ------------------------------------------------------------
+    # 4. Compute recent_best
+    # ------------------------------------------------------------
+    recent = values[-patience:]
+    recent_best = min(recent) if mode == "min" else max(recent)
+
+    # ------------------------------------------------------------
+    # 5. Initialize baseline
+    # ------------------------------------------------------------
+    if STATE.best is None:
+        STATE.best = recent_best
+        STATE.num_bad_steps = 0
+        STATE.last_checked_step = global_step
+        STATE.last_result = False
+        return False
+
+    # ------------------------------------------------------------
+    # 6. Improvement check (ONLY against STATE.best)
+    # ------------------------------------------------------------
+    improved = (
+        recent_best < STATE.best
+        if mode == "min"
+        else recent_best > STATE.best
+    )
+
+    if improved:
+        STATE.best = recent_best
+        STATE.num_bad_steps = 0
+        STATE.last_checked_step = global_step
+        STATE.last_result = False
+        return False
+
+    # ------------------------------------------------------------
+    # 7. Bad-step counting
+    # ------------------------------------------------------------
+    STATE.num_bad_steps += 1
+    if STATE.num_bad_steps < patience:
+        STATE.last_checked_step = global_step
+        STATE.last_result = False
+        return False
+
+    # ------------------------------------------------------------
+    # 8. Cooldown
+    # ------------------------------------------------------------
+    if cooldown > 0 and global_step - STATE.last_reduce_step <= cooldown:
+        STATE.last_checked_step = global_step
+        STATE.last_result = False
+        return False
+
+    # ------------------------------------------------------------
+    # 9. Trigger plateau (edge-trigger)
+    # ------------------------------------------------------------
+    STATE.last_reduce_step = global_step
+    STATE.num_bad_steps = 0
+    STATE.best = recent_best
+    result = True
+
+    # ------------------------------------------------------------
+    # 10. Record idempotent result and return
+    # ------------------------------------------------------------
+    STATE.last_checked_step = global_step
+    STATE.last_result = result
+    return result
 
 def data_selection(
   workload: spec.Workload,
@@ -331,6 +498,7 @@ def data_selection(
   hyperparameters: spec.Hyperparameters,
   global_step: int,
   rng: spec.RandomState,
+  log_dir: Optional[str] = None
 ) -> Dict[str, spec.Tensor]:
   """Select data from the infinitely repeating, pre-shuffled input queue.
   Each element of the queue is a batch of training examples and labels.
@@ -344,8 +512,12 @@ def data_selection(
   del rng
 
   line_search_interval = int(round(hyperparameters.interval * workload.step_hint))
+  warmup_length = int(0.01 * workload.step_hint)
+  is_plateau = check_reduce_plateau(log_dir=log_dir, global_step=global_step, patience=3)
+  logging.warning(f"is_line_search = {is_plateau}, state={STATE}")
 
-  if global_step % line_search_interval != 0:
+
+  if global_step % line_search_interval != 0 and global_step != warmup_length and not is_plateau:
     batch = next(input_queue)
   else:
     n_search_batches = getattr(hyperparameters, "accum_steps", 4)

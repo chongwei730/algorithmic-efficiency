@@ -318,7 +318,7 @@ class LineSearchScheduler():
 
         
 
-    def step(self, closure, condition="armijo", c1=0.6, factor=0.5, amax=1.0, amin=1e-6, step=0, interval=100):
+    def step(self, closure, condition="armijo", c1=0.6, factor=0.5, amax=1.0, amin=1e-6, step=0, interval=100, warmup_length=100, log_dir=None):
         """
         condition: Line Search condition. Option: armijo,
         search_mode: Option: backtracking, forward, interpolate
@@ -329,18 +329,27 @@ class LineSearchScheduler():
         """
         k = step % interval 
         alpha = self.optimizer.param_groups[0]["lr"]
-        
-        if k != 0: 
+        if step < warmup_length:
+            interval = warmup_length
+
+        if k != 0 and step != warmup_length: 
             if self.prev_alpha >= self.line_search_alpha: 
+                # progress in [0, 1]
+                t = (k + 1) / interval
+                # cosine interpolation (smooth start & end)
+                cosine_frac = 0.5 * (1 - math.cos(math.pi * t))
+                lr = self.prev_alpha + cosine_frac * (
+                    self.line_search_alpha - self.prev_alpha
+                )
+
                 for param_group in self.optimizer.param_groups: 
-                    param_group['lr'] = self.line_search_alpha
-                    return 
+                    param_group['lr'] = lr
+                return
             warmup_frac = (k + 1) / interval
             lr = self.prev_alpha + warmup_frac * (self.line_search_alpha - self.prev_alpha)
             for param_group in self.optimizer.param_groups: 
                 param_group['lr'] = lr 
             return
-        
 
 
         self.optimizer.zero_grad(set_to_none=True)
@@ -402,7 +411,8 @@ class LineSearchScheduler():
                     num_search=self.num_search,
                     step=step,
                     search_mode=self.search_mode,
-                    factor=factor
+                    factor=factor,
+                    log_dir=log_dir
                 )
         
         # if alpha is None or not np.isfinite(alpha) or alpha <= 0:
@@ -420,7 +430,7 @@ class LineSearchScheduler():
 
 
 
-def line_search_armijo(f, derphi0, phi0, args=(), c1=1e-4, alpha0=1, num_search=16, step=0, search_mode="backtrack", factor=0.5):
+def line_search_armijo(f, derphi0, phi0, args=(), c1=1e-4, alpha0=1, num_search=16, step=0, search_mode="backtrack", factor=0.5, log_dir=""):
     """Minimize over alpha, the function ``f(xk+alpha pk)``.
 
     Parameters
@@ -471,7 +481,7 @@ def line_search_armijo(f, derphi0, phi0, args=(), c1=1e-4, alpha0=1, num_search=
             # alpha, phi1 = search_bisection_ddp(phi, phi0, derphi0, c1=c1,
             #                                 old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, amin=1e-6, num_search=num_search)
             alpha, phi1 = search_bisection_ddp_visual(phi, phi0, derphi0, c1=c1,
-                                              old_alpha=alpha0, shrink=factor, grow=1/factor, amax=1, amin=1e-6, num_search=num_search, plot_path=f"backtracking_{step}.png")
+                                              old_alpha=alpha0, shrink=factor, grow=1/factor, amax=1, amin=1e-6, num_search=num_search, log_dir=log_dir, global_step=step)
     else:
             alpha, phi1 = search_bisection(phi, phi0, derphi0, c1=c1,
                                             old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, amin=1e-6, num_search=num_search)
@@ -581,9 +591,8 @@ def line_search_armijo(f, derphi0, phi0, args=(), c1=1e-4, alpha0=1, num_search=
 def search_bisection_ddp_visual(phi, phi0, derphi0, c1,
                      old_alpha, grow=2.0, shrink=0.5,
                      amax=1, amin=1e-6, num_search=10,
-                    plot_path="./img/backtracking_ls.png",
-                    t_min=0.0, t_max=1, num_points=100):
-
+                    t_min=0.0, t_max=1, num_points=100, log_dir=None, global_step=0):
+    
     use_ddp = dist.is_initialized() 
     ddp_on = dist.is_available() and dist.is_initialized()
     rank = dist.get_rank() if use_ddp else 0
@@ -599,9 +608,10 @@ def search_bisection_ddp_visual(phi, phi0, derphi0, c1,
     phi_a = phi(alpha)
     phi_old = phi_a
     explored = [] 
-
+    import os
     loss_list = [phi0, phi_a]
-
+    os.makedirs(log_dir, exist_ok=True)
+    plot_path = os.path.join(log_dir, f"backtracking_ls_{global_step}.png")
     if rank == 0:
         armijo_old_work = phi_a <= phi0 + c1 * alpha * derphi0
     armijo_flag = torch.tensor(
@@ -744,7 +754,7 @@ def search_bisection_ddp_visual(phi, phi0, derphi0, c1,
     phi0_g = reduce_mean_scalar(phi0)
     derphi0_g = reduce_mean_scalar(derphi0)
 
-    t_vals = np.linspace(1e-6, 1e-3, num_points)
+    t_vals = np.linspace(1e-6, min(4*old_alpha, 1e-3), num_points)
     phi_vals = []
     for t in t_vals:
             v_local = phi(float(t))
@@ -1003,6 +1013,7 @@ def search_backtracking_visual(
     c1, alpha, shrink,
     plot_path="./img/backtracking_ls.png",
     t_min=0.0, t_max=1e-4, num_points=100,
+    log_dir=None
 ):
     explored = []
 

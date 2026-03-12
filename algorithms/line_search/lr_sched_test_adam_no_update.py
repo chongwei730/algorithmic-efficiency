@@ -331,16 +331,14 @@ class LineSearchScheduler():
         alpha = self.optimizer.param_groups[0]["lr"]
         
         if k != 0: 
-            if self.prev_alpha >= self.line_search_alpha: 
-                for param_group in self.optimizer.param_groups: 
-                    param_group['lr'] = self.line_search_alpha
-                    return 
-            warmup_frac = (k + 1) / interval
-            lr = self.prev_alpha + warmup_frac * (self.line_search_alpha - self.prev_alpha)
             for param_group in self.optimizer.param_groups: 
-                param_group['lr'] = lr 
+                    param_group['lr'] = 1e-3
+                    return 
+            # warmup_frac = (k + 1) / interval
+            # lr = self.prev_alpha + warmup_frac * (self.line_search_alpha - self.prev_alpha)
+            # for param_group in self.optimizer.param_groups: 
+            #     param_group['lr'] = lr 
             return
-        
 
 
         self.optimizer.zero_grad(set_to_none=True)
@@ -390,7 +388,7 @@ class LineSearchScheduler():
             return val
         ## This can be optimized 
     
-        alpha0 = 1 if self.line_search_alpha == 0 else self.line_search_alpha
+        alpha0 = 1e-3
         logging.warning(f"start searching with alpha = {alpha0}, the prev_alpha is {self.prev_alpha}")
         alpha, fc, _ = line_search_armijo(
                     f=phi,
@@ -471,7 +469,7 @@ def line_search_armijo(f, derphi0, phi0, args=(), c1=1e-4, alpha0=1, num_search=
             # alpha, phi1 = search_bisection_ddp(phi, phi0, derphi0, c1=c1,
             #                                 old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, amin=1e-6, num_search=num_search)
             alpha, phi1 = search_bisection_ddp_visual(phi, phi0, derphi0, c1=c1,
-                                              old_alpha=alpha0, shrink=factor, grow=1/factor, amax=1, amin=1e-6, num_search=num_search, plot_path=f"backtracking_{step}.png")
+                                              old_alpha=alpha0, shrink=factor, grow=1/factor, amax=1, amin=1e-6, num_search=num_search, plot_path=f"./fixed_img/backtracking_{step}.png")
     else:
             alpha, phi1 = search_bisection(phi, phi0, derphi0, c1=c1,
                                             old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, amin=1e-6, num_search=num_search)
@@ -744,7 +742,7 @@ def search_bisection_ddp_visual(phi, phi0, derphi0, c1,
     phi0_g = reduce_mean_scalar(phi0)
     derphi0_g = reduce_mean_scalar(derphi0)
 
-    t_vals = np.linspace(1e-6, 1e-3, num_points)
+    t_vals = np.linspace(1e-6, 2e-3, num_points)
     phi_vals = []
     for t in t_vals:
             v_local = phi(float(t))
@@ -775,6 +773,7 @@ def search_bisection_ddp_visual(phi, phi0, derphi0, c1,
         plt.legend()
         plt.savefig(plot_path, dpi=200)
         plt.close()
+        logging.warning(f"save to {plot_path}")
 
             
 

@@ -9,7 +9,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from algoperf import spec
 from algoperf.pytorch_utils import pytorch_setup
-from .lr_sched_test_decay import LineSearchScheduler
+from .lr_sched_test_warmup import LineSearchScheduler
 import time
 
 
@@ -56,7 +56,7 @@ def init_optimizer_state(
     'optimizer': optimizer
   }
 
-  scheduler = LineSearchScheduler(optimizer=optimizer, num_search=16, start_lr=0, model_paras=list(model_params.parameters()), optimizer_type="Adam", injection=False, search_mode="bisection")
+  scheduler = LineSearchScheduler(optimizer=optimizer, num_search=16, start_lr=1e-5, model_paras=list(model_params.parameters()), optimizer_type="Adam", injection=False, search_mode="bisection")
 
 
   optimizer_state['scheduler'] = scheduler
@@ -101,7 +101,8 @@ def update_params(
   # # logging.warning(f"hyperparameters.interval {hyperparameters.interval} rank={rank}")
   # # logging.warning(f"interval {line_search_interval} rank={rank}")
   closure = None
-  if global_step % line_search_interval == 0:
+  warmup_length = 100
+  if (global_step % line_search_interval == 0 and global_step > warmup_length) or global_step == warmup_length:
     batch_ls = batch
     def make_closure():
       def closure(require_grad=False, batch=batch_ls):
@@ -344,11 +345,11 @@ def data_selection(
   del rng
 
   line_search_interval = int(round(hyperparameters.interval * workload.step_hint))
+  warmup_length = 100
 
-  if global_step % line_search_interval != 0:
-    batch = next(input_queue)
-  else:
+  if (global_step % line_search_interval == 0 and global_step > warmup_length) or global_step == warmup_length:
     n_search_batches = getattr(hyperparameters, "accum_steps", 4)
-    batch = [next(input_queue) for _ in range(n_search_batches)]
-
+    batch = [next(input_queue) for _ in range(n_search_batches)] 
+  else:
+    batch = next(input_queue)
   return batch

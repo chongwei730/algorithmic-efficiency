@@ -8,11 +8,13 @@ import torch.distributed.nn as dist_nn
 from absl import logging
 from torch import Tensor
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
-
+import torch.distributed as dist
+import os
 from algoperf import spec
+import numpy as np
 from algoperf.pytorch_utils import pytorch_setup
-
-
+import matplotlib.pyplot as plt
+import os
 USE_PYTORCH_DDP = pytorch_setup()[0]
 
 
@@ -133,6 +135,7 @@ class NAdamW(torch.optim.Optimizer):
         weight_decay=group['weight_decay'],
         eps=group['eps'],
       )
+      
 
     return loss
 
@@ -234,6 +237,346 @@ def init_optimizer_state(
   return optimizer_state
 
 
+@torch.no_grad()
+def get_real_update_vector(model, optimizer):
+
+    theta_old = [p.detach().clone() for p in model.parameters()]
+
+
+    optimizer.step()
+
+
+    delta = []
+    for p_old, p in zip(theta_old, model.parameters()):
+        delta.append((p.detach() - p_old).flatten())
+
+    delta = torch.cat(delta)
+
+
+    for p_old, p in zip(theta_old, model.parameters()):
+        p.copy_(p_old)
+
+    return delta
+
+
+@torch.no_grad()
+def visualize_update_direction_slice(
+    current_model,
+    optimizer_state,
+    workload,
+    batch,
+    model_state,
+    rng,
+    global_step,
+    num_points: int = 80,
+    t_min: float = 1e-6,
+    t_max: float = 2e-3,
+    c1: float = 1e-4,
+    out_dir: str = "./nadam_img",
+):
+    """
+    Plot 1D loss slice phi(t) = L(theta + t * d) along the *actual NAdamW update direction*,
+    and compare that constructed direction against the true optimizer step delta.
+
+    Notes:
+      - We build d to match YOUR nadamw() implementation:
+          param.mul_(1 - lr * weight_decay)
+          param.addcdiv_(m2, denom, value = - lr / bc1)
+        where m2 = beta1*m + (1-beta1)*grad, denom = sqrt(v/bc2) + eps.
+      - We include weight decay contribution in d so the comparison is meaningful.
+      - We DO NOT call scheduler here.
+      - Safe for DDP: comparison metrics are reduced; plots only rank0.
+    """
+
+    # -----------------------------
+    # DDP helpers
+    # -----------------------------
+    ddp_on = dist.is_available() and dist.is_initialized()
+    rank = dist.get_rank() if ddp_on else 0
+    world_size = dist.get_world_size() if ddp_on else 1
+    is_rank0 = (rank == 0)
+
+    def reduce_mean_scalar(x):
+        """All-reduce mean for a scalar tensor or python number."""
+        if not ddp_on:
+            return float(x.detach().item()) if torch.is_tensor(x) else float(x)
+
+        device = next(current_model.parameters()).device
+        if not torch.is_tensor(x):
+            x = torch.tensor(float(x), device=device)
+        else:
+            x = x.detach()
+            if x.dim() != 0:
+                x = x.reshape(())
+            x = x.to(device)
+
+        dist.all_reduce(x, op=dist.ReduceOp.SUM)
+        x /= world_size
+        return float(x.item())
+
+    def reduce_mean_vector(v: torch.Tensor) -> torch.Tensor:
+        """All-reduce mean for a 1D vector tensor."""
+        if not ddp_on:
+            return v
+        v = v.detach()
+        dist.all_reduce(v, op=dist.ReduceOp.SUM)
+        v /= world_size
+        return v
+
+    # -----------------------------
+    # Utilities: flatten params, restore, etc.
+    # -----------------------------
+    def flatten_params(params_list):
+        return torch.cat([p.detach().flatten() for p in params_list])
+
+    # -----------------------------
+    # Grab optimizer hyperparams
+    # -----------------------------
+    optimizer = optimizer_state["optimizer"]
+    group = optimizer.param_groups[0]
+    lr = float(group["lr"])
+    beta1, beta2 = group["betas"]
+    eps = float(group["eps"])
+    weight_decay = float(group.get("weight_decay", 0.0))
+
+    # -----------------------------
+    # Determine step t from optimizer state
+    # (state['step'] is incremented inside optimizer.step(); here we want CURRENT step index)
+    # -----------------------------
+    step_t = None
+    for p in current_model.parameters():
+        st = optimizer.state.get(p, None)
+        if st is not None and "step" in st:
+            step_t = int(st["step"].item())
+            break
+
+    if step_t is None:
+        if is_rank0:
+            logging.warning("[slice] optimizer state has no 'step' yet; skipping slice.")
+        return
+
+    # Avoid step=0 causing bc1/bc2=0
+    step_eff = max(step_t, 1)
+    bc1 = 1.0 - (beta1 ** step_eff)
+    bc2 = 1.0 - (beta2 ** step_eff)
+    bc2_sqrt = math.sqrt(bc2)
+
+    # -----------------------------
+    # Build parameter list that matches optimizer state / grads
+    # -----------------------------
+    params = []
+    m_list = []
+    v_list = []
+    g_list = []
+
+    for p in current_model.parameters():
+        if p.grad is None:
+            continue
+        st = optimizer.state.get(p, None)
+        if st is None:
+            continue
+        if "exp_avg" not in st or "exp_avg_sq" not in st:
+            continue
+        params.append(p)
+        m_list.append(st["exp_avg"])
+        v_list.append(st["exp_avg_sq"])
+        g_list.append(p.grad)
+
+    if len(params) == 0:
+        if is_rank0:
+            logging.warning("[slice] No valid parameters with grad + optimizer state.")
+        return
+
+    # -----------------------------
+    # 1) Construct d_viz that matches the REAL Δθ of your nadamw():
+    #    Δθ = -lr*wd*θ  +  [ -lr/bc1 * (m2 / (sqrt(v)/sqrt(bc2) + eps)) ]
+    #    with m2 = beta1*m + (1-beta1)*g
+    #
+    # We'll construct d_viz = Δθ (i.e., already includes lr).
+    # Then you can sweep t as a multiplier around 1.0 if you want,
+    # BUT keeping your existing t_min/t_max is fine if you interpret
+    # it as a "small scaling". Here we keep your interface: phi(theta + t*d_viz_dir),
+    # so we will ALSO construct a direction-only vector (normalized) for slice.
+    # -----------------------------
+    d_tensors = []
+    for p, m, v, g in zip(params, m_list, v_list, g_list):
+        # denom = sqrt(v)/sqrt(bc2) + eps
+        denom = (v.sqrt() / bc2_sqrt).add(eps)
+        # m2 = beta1*m + (1-beta1)*g
+        m2 = beta1 * m + (1.0 - beta1) * g
+        # adaptive part: - lr/bc1 * m2/denom
+        dir_adapt = -(1.0 / bc1) * (m2 / denom)
+        dir_wd = -weight_decay * p
+        d_lr1 = dir_adapt + dir_wd
+        d_tensors.append(d_lr1)
+
+    # Direction for slice: use the actual delta as direction (so t is "multiplier")
+    # If you want t to be a step size in absolute scale, you'd pass an unscaled direction instead.
+    # Here we keep: theta <- theta + t * direction, so direction is delta (one-step update).
+    direction = d_tensors
+
+    # Flatten viz direction for comparison
+    d_viz_flat = torch.cat([d.detach().flatten() for d in d_tensors])
+
+    # -----------------------------
+    # 2) Compute the TRUE Δθ_real via optimizer.step() then rollback
+    #    IMPORTANT: this will update exp_avg/exp_avg_sq/step in optimizer state.
+    #    To compare apples-to-apples, we do the step/rollback using a COPY of optimizer state.
+    #
+    #    Minimal practical approach:
+    #      - Snapshot params
+    #      - Snapshot optimizer.state tensors for the involved params
+    #      - Call optimizer.step()
+    #      - Compute delta
+    #      - Restore params and optimizer.state snapshots
+    #
+    #    This keeps training unaffected.
+    # -----------------------------
+    # Snapshot params
+    theta_old = [p.detach().clone() for p in params]
+
+    # Snapshot state (for only the params we touch)
+    state_backup = []
+    for p in params:
+        st = optimizer.state[p]
+        state_backup.append({
+            "step": st["step"].detach().clone(),
+            "exp_avg": st["exp_avg"].detach().clone(),
+            "exp_avg_sq": st["exp_avg_sq"].detach().clone(),
+        })
+
+    # Do a real step (no closure)
+    optimizer.step()
+
+    # Compute delta_real (only for our `params` list)
+    delta_real_flat = torch.cat([(p.detach() - p0).flatten() for p, p0 in zip(params, theta_old)])
+
+    # Roll back params
+    for p, p0 in zip(params, theta_old):
+        p.copy_(p0)
+
+    # Roll back optimizer state
+    for p, bk in zip(params, state_backup):
+        st = optimizer.state[p]
+        st["step"].copy_(bk["step"])
+        st["exp_avg"].copy_(bk["exp_avg"])
+        st["exp_avg_sq"].copy_(bk["exp_avg_sq"])
+
+    # -----------------------------
+    # 3) Compare vectors (DDP-mean them for logging stability)
+    # -----------------------------
+    def compare_update_and_direction(delta_real: torch.Tensor, d_viz: torch.Tensor):
+        # Cosine
+        denom = (delta_real.norm() * d_viz.norm() + 1e-12)
+        cos = torch.dot(delta_real, d_viz) / denom
+
+        # Best scale c: minimize ||delta_real - c*d_viz||
+        c = torch.dot(delta_real, d_viz) / (d_viz.norm() ** 2 + 1e-12)
+
+        rel_err = (delta_real - c * d_viz).norm() / (delta_real.norm() + 1e-12)
+        return cos, c, rel_err
+
+    # Reduce (mean) across ranks for cleaner numbers
+    # (We reduce the scalars after computing them locally.)
+    cos, scale_c, rel_err = compare_update_and_direction(delta_real_flat, d_viz_flat)
+    cos_g = reduce_mean_scalar(cos)
+    scale_g = reduce_mean_scalar(scale_c)
+    rel_g = reduce_mean_scalar(rel_err)
+
+    if is_rank0:
+        logging.warning(
+            f"[slice][compare] step={global_step} "
+            f"cos={cos_g:.6f}  scale={scale_g:.6e}  rel_err={rel_g:.6e} "
+            f"(expect cos~1, scale~1 if direction is Δθ)"
+        )
+
+    # -----------------------------
+    # phi(t) definition
+    # -----------------------------
+    def phi(t: float):
+        with torch.no_grad():
+            # theta <- theta + t * direction
+            for p, d in zip(params, direction):
+                p.add_(d, alpha=t)
+
+            logits, _ = workload.model_fn(
+                params=current_model,
+                augmented_and_preprocessed_input_batch=batch,
+                model_state=model_state,
+                mode=spec.ForwardPassMode.EVAL,
+                rng=rng,
+                update_batch_norm=False,
+                dropout_rate=0.0,
+            )
+
+            loss_dict = workload.loss_fn(
+                label_batch=batch["targets"],
+                logits_batch=logits,
+                mask_batch=batch.get("weights"),
+                label_smoothing=0.0,
+            )
+
+            phi_t = loss_dict["summed"] / loss_dict["n_valid_examples"]
+
+            # restore parameters
+            for p, d in zip(params, direction):
+                p.add_(d, alpha=-t)
+
+        return phi_t
+
+    # -----------------------------
+    # phi(0) and directional derivative (direction = Δθ, so derivative is along Δθ)
+    # -----------------------------
+    phi0 = phi(0.0)
+
+    derphi0 = torch.zeros((), device=phi0.device)
+    for p, d in zip(params, direction):
+        # Using current gradient (from TRAIN) to approximate directional derivative
+        derphi0 += torch.sum(p.grad.detach() * d.detach())
+
+    phi0_g = reduce_mean_scalar(phi0)
+    derphi0_g = reduce_mean_scalar(derphi0)
+
+    # -----------------------------
+    # sweep t (here t is a multiplier around Δθ)
+    # Your t_min/t_max were absolute step sizes before; now interpret as multipliers.
+    # Keeping your values is OK, but you may want [0, 2] etc.
+    # We'll keep as-is per request.
+    # -----------------------------
+    t_vals = np.logspace(math.log10(t_min), math.log10(t_max), num_points)
+
+    phi_vals = []
+    for t in t_vals:
+        v_local = phi(float(t))
+        v = reduce_mean_scalar(v_local)
+        phi_vals.append(v)
+    phi_vals = np.array(phi_vals)
+
+    # -----------------------------
+    # plotting (rank 0 only)
+    # -----------------------------
+    if is_rank0:
+        os.makedirs(out_dir, exist_ok=True)
+        plot_path = os.path.join(out_dir, f"slice_step_{global_step:07d}.png")
+
+        armijo_line = phi0_g + c1 * t_vals * derphi0_g
+
+        plt.figure(figsize=(8, 6))
+        plt.plot(t_vals, phi_vals, label="phi(t)", linewidth=2)
+        plt.plot(t_vals, armijo_line, "--", label="Armijo line", linewidth=2)
+        plt.xscale("log")
+        plt.xlabel("t (multiplier of one-step Δθ)")
+        plt.ylabel("loss")
+        plt.title(f"Update-direction loss slice @ step {global_step}")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(plot_path, dpi=200)
+        plt.close()
+
+        logging.warning(f"[slice] saved loss slice at step {global_step} -> {plot_path}")
+
+
 def update_params(
   workload: spec.Workload,
   current_param_container: spec.ParameterContainer,
@@ -293,6 +636,17 @@ def update_params(
   loss = summed_loss / n_valid_examples
 
   loss.backward()
+  # if global_step % 100 == 0:
+  #     visualize_update_direction_slice(
+  #         current_model,
+  #         optimizer_state,
+  #         workload,
+  #         batch,
+  #         model_state,
+  #         rng,
+  #         global_step,
+  #     )
+
 
   if grad_clip is not None:
     torch.nn.utils.clip_grad_norm_(

@@ -14,7 +14,7 @@ from torch.nn.functional import cosine_similarity
 import matplotlib.pyplot as plt
 
 class LineSearchScheduler():
-    def __init__(self, optimizer, start_lr, model_paras, num_search=16, optimizer_type="SGD", injection=True, search_mode="backtrack"):
+    def __init__(self, optimizer, start_lr, model_paras, num_search=16, optimizer_type="SGD", injection=True, search_mode="backtrack", warmup_length=100, num_perturb_samples=3, rho=0.001):
         """
         num_search: maximum number of searches
         start_lr: maximum LR to start if backtrack/ minimum LR to start if forward
@@ -31,8 +31,11 @@ class LineSearchScheduler():
         self.injection=injection
         self.prev_fvals = deque(maxlen=2)
         self.line_search_alpha = start_lr
+        self.warmup_length = warmup_length
         self.prev_alpha = start_lr
         self.search_mode = search_mode
+        self.K = num_perturb_samples
+        self.rho = rho
         for pg in self.optimizer.param_groups:
             pg["lr"] = self.start_lr
         self.paras = model_paras
@@ -160,6 +163,8 @@ class LineSearchScheduler():
                     # )
                 return - p.grad / (p.grad.abs() + eps) - wd * p
         return rule
+    
+
 
     @torch.no_grad()
     def update_model(self, alpha):
@@ -203,6 +208,40 @@ class LineSearchScheduler():
   
 
 
+    def perturb_parameters_global_(self, rho):
+ 
+        paras = list(self.paras)
+
+        noises = {}
+        with torch.no_grad():
+            device = "cuda"
+
+            # 1) sample noise and compute its norm
+            noise_norm_sq = torch.zeros((), device=device)
+            for p in paras:
+                if p.requires_grad:
+                    z = torch.randn_like(p)
+                    noises[p] = z
+                    noise_norm_sq += z.pow(2).sum()
+
+            noise_norm = noise_norm_sq.sqrt().add_(1e-12)
+            scale = rho / noise_norm
+
+            # 2) apply scaled noise
+            for p in paras:
+                if p.requires_grad:
+                    z = noises[p]
+                    z.mul_(scale)
+                    p.add_(z)
+
+
+        return noises
+
+
+    def restore_parameters_(self, noises):
+        with torch.no_grad():
+            for p, z in noises.items():
+                p.sub_(z)
 
 
     def check_optimizer_step_vs_rule(self, 
@@ -318,7 +357,7 @@ class LineSearchScheduler():
 
         
 
-    def step(self, closure, condition="armijo", c1=0.6, factor=0.5, amax=1.0, amin=1e-6, step=0, interval=100):
+    def step(self, closure, condition="armijo", c1=0.6, factor=0.5, amax=1.0, amin=1e-6, step=0, interval=100, warmup_length=100, log_dir=None, is_plateau=False):
         """
         condition: Line Search condition. Option: armijo,
         search_mode: Option: backtracking, forward, interpolate
@@ -329,33 +368,75 @@ class LineSearchScheduler():
         """
         k = step % interval 
         alpha = self.optimizer.param_groups[0]["lr"]
-        
-        if k != 0: 
+        if step < warmup_length:
+            interval = warmup_length
+
+        if k != 0 and step != warmup_length and not is_plateau: 
             if self.prev_alpha >= self.line_search_alpha: 
+                # progress in [0, 1]
+                t = (k + 1) / interval
+                # cosine interpolation (smooth start & end)
+                cosine_frac = 0.5 * (1 - math.cos(math.pi * t))
+                lr = self.prev_alpha + cosine_frac * (
+                    self.line_search_alpha - self.prev_alpha
+                )
+
                 for param_group in self.optimizer.param_groups: 
-                    param_group['lr'] = self.line_search_alpha
-                    return 
+                    param_group['lr'] = lr
+                return
             warmup_frac = (k + 1) / interval
             lr = self.prev_alpha + warmup_frac * (self.line_search_alpha - self.prev_alpha)
             for param_group in self.optimizer.param_groups: 
                 param_group['lr'] = lr 
             return
-        
 
 
         self.optimizer.zero_grad(set_to_none=True)
-        loss = closure(require_grad=True)
+        # loss = closure(require_grad=True)
         self.rule = self.get_potential_update_direction()
 
+        # inner = 0.0
+        # with torch.no_grad():
+        #     for group in self.optimizer.param_groups:
+        #             for p in group["params"]:
+        #                 if p.grad is None:
+        #                     continue     
+        #                 inner += torch.dot(p.grad.flatten(), self.rule(p).flatten())
+
+        # phi0, derphi0 = loss, inner.detach()
+        loss_sum = 0
+
+        for _ in range(self.K):
+            noises = self.perturb_parameters_global_(self.rho)
+
+            try:
+                loss_p = closure(require_grad=True)
+                loss_sum += loss_p
+            finally:
+                self.restore_parameters_(noises)
+
+        # # average gradient
+        with torch.no_grad():
+            for group in self.optimizer.param_groups:
+                for p in group["params"]:
+                    if p.grad is not None:
+                        p.grad.div_(self.K)
+
+        phi0 = loss_sum / self.K 
+
+        # directional derivative at smoothed point
         inner = 0.0
         with torch.no_grad():
             for group in self.optimizer.param_groups:
-                    for p in group["params"]:
-                        if p.grad is None:
-                            continue     
-                        inner += torch.dot(p.grad.flatten(), self.rule(p).flatten())
+                for p in group["params"]:
+                    if p.grad is None:
+                        continue
+                    inner += torch.dot(
+                        p.grad.flatten(),
+                        self.rule(p).flatten()
+                    )
 
-        phi0, derphi0 = loss, inner.detach()
+        derphi0 = inner.detach()
 
         # self.test_update_restore_max_diff(alpha=alpha)
         # self.check_optimizer_step_vs_rule(
@@ -377,21 +458,31 @@ class LineSearchScheduler():
                                 continue
                             inner += torch.dot(p.grad.flatten(), self.rule(p).flatten())
 
-            phi0, derphi0 = loss, inner.detach()
+            phi0, derphi0 = phi0, inner.detach()
             logging.warning(f"ASCENT!!!, new derphi0 {derphi0}")
 
         # xk = [p.detach().clone() for p in self.paras]
         # gk = [p.grad.detach().clone() if p.grad is not None else None for p in self.paras]
         @torch.no_grad()
-        def phi(alpha):
+        def single_phi(alpha):
             cached_dirs = self.update_model(alpha)
             val = closure(require_grad=False)
             self.restore_model(alpha, cached_dirs)
             return val
+    
+        def phi(alpha, n_samples=8, rel=0.02, alpha_min=1e-12, alpha_max=float("inf")):
+            s = 0.0
+            for _ in range(n_samples):
+                z = torch.randn(()).item()  
+                a = alpha * (1.0 + rel * z)
+                a = max(alpha_min, min(a, alpha_max))
+                s += single_phi(a)          
+            return s / n_samples
         ## This can be optimized 
     
         alpha0 = 1 if self.line_search_alpha == 0 else self.line_search_alpha
         logging.warning(f"start searching with alpha = {alpha0}, the prev_alpha is {self.prev_alpha}")
+
         alpha, fc, _ = line_search_armijo(
                     f=phi,
                     derphi0=derphi0,
@@ -402,7 +493,8 @@ class LineSearchScheduler():
                     num_search=self.num_search,
                     step=step,
                     search_mode=self.search_mode,
-                    factor=factor
+                    factor=factor,
+                    log_dir=log_dir
                 )
         
         # if alpha is None or not np.isfinite(alpha) or alpha <= 0:
@@ -415,12 +507,17 @@ class LineSearchScheduler():
         #         param_group['lr'] = alpha
 
         self.line_search_alpha = alpha
+        if is_plateau:
+           for param_group in self.optimizer.param_groups: 
+                    param_group['lr'] = alpha
         self.prev_alpha = self.optimizer.param_groups[0]["lr"]
 
 
 
 
-def line_search_armijo(f, derphi0, phi0, args=(), c1=1e-4, alpha0=1, num_search=16, step=0, search_mode="backtrack", factor=0.5):
+
+
+def line_search_armijo(f, derphi0, phi0, args=(), c1=1e-4, alpha0=1, num_search=16, step=0, search_mode="backtrack", factor=0.5, log_dir=""):
     """Minimize over alpha, the function ``f(xk+alpha pk)``.
 
     Parameters
@@ -471,7 +568,7 @@ def line_search_armijo(f, derphi0, phi0, args=(), c1=1e-4, alpha0=1, num_search=
             # alpha, phi1 = search_bisection_ddp(phi, phi0, derphi0, c1=c1,
             #                                 old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, amin=1e-6, num_search=num_search)
             alpha, phi1 = search_bisection_ddp_visual(phi, phi0, derphi0, c1=c1,
-                                              old_alpha=alpha0, shrink=factor, grow=1/factor, amax=1, amin=1e-6, num_search=num_search, plot_path=f"backtracking_{step}.png")
+                                              old_alpha=alpha0, shrink=factor, grow=1/factor, amax=1, amin=1e-6, num_search=num_search, log_dir=log_dir, global_step=step)
     else:
             alpha, phi1 = search_bisection(phi, phi0, derphi0, c1=c1,
                                             old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, amin=1e-6, num_search=num_search)
@@ -581,9 +678,8 @@ def line_search_armijo(f, derphi0, phi0, args=(), c1=1e-4, alpha0=1, num_search=
 def search_bisection_ddp_visual(phi, phi0, derphi0, c1,
                      old_alpha, grow=2.0, shrink=0.5,
                      amax=1, amin=1e-6, num_search=10,
-                    plot_path="./img/backtracking_ls.png",
-                    t_min=0.0, t_max=1, num_points=100):
-
+                    t_min=0.0, t_max=1, num_points=100, log_dir=None, global_step=0):
+    
     use_ddp = dist.is_initialized() 
     ddp_on = dist.is_available() and dist.is_initialized()
     rank = dist.get_rank() if use_ddp else 0
@@ -599,9 +695,10 @@ def search_bisection_ddp_visual(phi, phi0, derphi0, c1,
     phi_a = phi(alpha)
     phi_old = phi_a
     explored = [] 
-
+    import os
     loss_list = [phi0, phi_a]
-
+    os.makedirs(log_dir, exist_ok=True)
+    plot_path = os.path.join(log_dir, f"backtracking_ls_{global_step}.png")
     if rank == 0:
         armijo_old_work = phi_a <= phi0 + c1 * alpha * derphi0
     armijo_flag = torch.tensor(
@@ -744,7 +841,7 @@ def search_bisection_ddp_visual(phi, phi0, derphi0, c1,
     phi0_g = reduce_mean_scalar(phi0)
     derphi0_g = reduce_mean_scalar(derphi0)
 
-    t_vals = np.linspace(1e-6, 1e-3, num_points)
+    t_vals = np.linspace(1e-6, max(old_alpha, 1e-3), num_points)
     phi_vals = []
     for t in t_vals:
             v_local = phi(float(t))
@@ -775,9 +872,7 @@ def search_bisection_ddp_visual(phi, phi0, derphi0, c1,
         plt.legend()
         plt.savefig(plot_path, dpi=200)
         plt.close()
-
             
-
     return alpha, phi_a
 
 
@@ -1003,6 +1098,7 @@ def search_backtracking_visual(
     c1, alpha, shrink,
     plot_path="./img/backtracking_ls.png",
     t_min=0.0, t_max=1e-4, num_points=100,
+    log_dir=None
 ):
     explored = []
 
@@ -1012,7 +1108,7 @@ def search_backtracking_visual(
     phi_a_old = phi_a
     explored.append((alpha, phi_a))
 
-    # ====== 平台判据参数 ======
+
     flat_eps = 2e-2     
     trend_eps = 1e-2    
     min_points = 4      

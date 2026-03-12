@@ -701,9 +701,9 @@ def search_bisection_ddp(phi, phi0, derphi0, c1,
                 # logging.warning(f'line search: accept={accept},rank={rank}')
                 dist.broadcast(flat_flag, src=0)
                 flat_region = bool(flat_flag.item())
-                if flat_region:
-                        logging.warning(f" Flat Region: {flat_region}. loss list: {loss_list}, maxdiff : {max(loss_list) - min(loss_list)}")
-                        return old_alpha, phi_old 
+                # if flat_region:
+                #         logging.warning(f" Flat Region: {flat_region}. loss list: {loss_list}, maxdiff : {max(loss_list) - min(loss_list)}")
+                #         return old_alpha, phi_old 
                 if accept:
                     return new_alpha, new_phi
                 

@@ -27,8 +27,12 @@ scoring/plots/
 datasets/dataset_setup.py
 /gpu_logs
 /exp_log
+/log
 /log_*
 /test_*
+/img_*
+/*_img
+plot_copy.py
 /tests
 /scoring_results/
 

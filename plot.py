@@ -11,12 +11,12 @@ import matplotlib.pyplot as plt
 # CONFIG
 # ============================================================
 
-# BASE_DIR = "/scratch.global/chen8596/mlcommons_experiments_test/"
-BASE_DIR = "./test"
+BASE_DIR = "/scratch.global/chen8596/mlcommons_experiments_TEST_TEST/"
+# BASE_DIR = "./test"
 TRIAL_GLOB = "trial_*"
 
 # Fallback columns
-TRAIN_LOSS_COL = "loss"
+TRAIN_LOSS_COL = "train/loss"
 LR_COL = "lr"
 
 from scoring import scoring_utils
@@ -30,6 +30,15 @@ def get_validation_metric_for_workload(workload_dir_name):
     except Exception:
         # Fallback to validation/accuracy if unknown workload
         return 'validation/accuracy'
+    
+def get_training_metric_for_workload(workload_dir_name):
+    # scoring_utils expects a workload identifier with framework suffix (e.g., cifar_pytorch)
+    try:
+        metric, target = scoring_utils.get_workload_metrics_and_targets(workload_dir_name, split='train')
+        return metric
+    except Exception:
+        # Fallback to validation/accuracy if unknown workload
+        return 'train/accuracy'
 
 # ============================================================
 # UTILS
@@ -91,6 +100,7 @@ for algo in algorithms:
 
         # determine validation metric for this workload
         val_metric = get_validation_metric_for_workload(workload)
+        train_metric = get_training_metric_for_workload(workload)
 
         # ------------------------
         # TRAIN LOSS
@@ -121,6 +131,7 @@ for algo in algorithms:
         if curves > 0:
             plt.xlabel("global_step")
             plt.ylabel("train loss")
+            plt.yscale("log")
             plt.title(f"{algo}/{workload} – Training Loss")
             plt.grid(True)
             plt.legend(fontsize=7)
@@ -164,6 +175,46 @@ for algo in algorithms:
             plt.savefig(os.path.join(algo_root, f"{workload}_val_metric.png"), dpi=200)
         plt.close()
 
+
+        # ------------------------
+        # TRAIN METRIC (varies by workload)
+        # ------------------------
+        plt.figure()
+        curves = 0
+
+        for t in trials:
+            df = load_csv(os.path.join(t, "measurements.csv"))
+            # fallback to eval_measurements.csv
+            if df is None:
+                df = load_csv(os.path.join(t, "eval_measurements.csv"))
+            if df is None or train_metric not in df.columns:
+                continue
+
+            mask = df[train_metric].notna()
+            if mask.sum() == 0:
+                continue
+
+            plt.plot(
+                df.loc[mask, "global_step"],
+                df.loc[mask, train_metric],
+                alpha=0.7,
+                label=make_label(t),
+            )
+            curves += 1
+
+        if curves > 0:
+            plt.xlabel("global_step")
+            plt.ylabel(train_metric)
+            plt.title(f"{algo}/{workload} – {train_metric}")
+            plt.grid(True)
+            plt.legend(fontsize=7)
+            plt.tight_layout()
+            plt.savefig(
+                os.path.join(algo_root, f"{workload}_train_metric.png"),
+                dpi=200,
+            )
+        plt.close()
+
         # ------------------------
         # LEARNING RATE
         # ------------------------
@@ -190,6 +241,7 @@ for algo in algorithms:
         if curves > 0:
             plt.xlabel("global_step")
             plt.ylabel("learning rate")
+            plt.ylim(bottom=1e-8, top=1e-2)
             plt.title(f"{algo}/{workload} – Learning Rate")
             plt.grid(True)
             plt.legend(fontsize=7)

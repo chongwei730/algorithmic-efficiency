@@ -9,7 +9,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from algoperf import spec
 from algoperf.pytorch_utils import pytorch_setup
-from .lr_sched_test_decay import LineSearchScheduler
+from .lr_sched_fastmri_debug import LineSearchScheduler
 import time
 
 
@@ -22,9 +22,6 @@ else:
     print("Running in single-process (non-DDP) mode.")
 
 USE_PYTORCH_DDP = pytorch_setup()[0]
-
-
-
 
 def init_optimizer_state(
   workload: spec.Workload,
@@ -47,7 +44,7 @@ def init_optimizer_state(
   #   )
   optimizer = torch.optim.AdamW(
       model_params.parameters(),
-      lr=0,
+      lr=0.001,
       betas=(1.0 - hyperparameters.one_minus_beta1, hyperparameters.beta2),
       weight_decay=hyperparameters.weight_decay
     )
@@ -77,6 +74,7 @@ def update_params(
   eval_results: List[Tuple[int, float]],
   global_step: int,
   rng: spec.RandomState,
+  log_dir: Optional[str] = None,
   train_state: Optional[Dict[str, Any]] = None,
 ) -> spec.UpdateReturn:
   """Return (updated_optimizer_state, updated_params, updated_model_state)."""
@@ -96,12 +94,17 @@ def update_params(
   accum_steps = hyperparameters.accum_steps
   device = next(current_model.parameters()).device
 
-  line_search_interval = int(round(hyperparameters.interval * workload.step_hint))
+  # line_search_interval = int(round(hyperparameters.interval * workload.step_hint))
+  line_search_interval = 200
   # # logging.warning(f"step_hint {workload.step_hint} rank={rank}")
   # # logging.warning(f"hyperparameters.interval {hyperparameters.interval} rank={rank}")
   # # logging.warning(f"interval {line_search_interval} rank={rank}")
   closure = None
-  if global_step % line_search_interval == 0:
+  
+  # warmup_length = int(0.01 * workload.step_hint)
+  warmup_length = 100
+  is_plateau = False
+  if type(batch) == list:
     batch_ls = batch
     def make_closure():
       def closure(require_grad=False, batch=batch_ls):
@@ -143,7 +146,7 @@ def update_params(
           total_loss_t = total_loss_t + loss.detach()
         
         avg_loss_t = total_loss_t / accum_steps
-        logging.warning(f"count: {count}")
+        # logging.warning(f"count: {count}")
         assert count == hyperparameters.accum_steps
 
 
@@ -170,11 +173,12 @@ def update_params(
     # for pg in optimizer_state['optimizer'].param_groups:
     #         pg['lr'] = alpha.item()
 
-
     batch = batch[0]
+    if global_step % line_search_interval != 0 and global_step != warmup_length:
+       is_plateau = True
+    logging.warning(f"is_plateau {is_plateau}")
 
   # logging.warning(f"[rank {rank}] iter {global_step} before model_fn")
-
 
   scheduler = optimizer_state['scheduler']
   scheduler.step(
@@ -183,78 +187,115 @@ def update_params(
                 step=global_step,
                 interval=line_search_interval,
                 condition="armijo",
+                warmup_length=warmup_length,
+                log_dir=log_dir,
+                is_plateau=is_plateau
             )
 
-  logits_batch, new_model_state = workload.model_fn(
-    params=current_model,
-    augmented_and_preprocessed_input_batch=batch,
-    model_state=model_state,
-    mode=spec.ForwardPassMode.TRAIN,
-    rng=rng,
-    update_batch_norm=True,
-    dropout_rate=hyperparameters.dropout_rate,
-  )
-  # logging.warning(f"[rank {rank}] iter {global_step} after model_fn")
+  model = current_model
+  model.zero_grad()
 
-  label_smoothing = (
-    hyperparameters.label_smoothing
-    if hasattr(hyperparameters, 'label_smoothing')
-    else 0.0
-  )
+  per_sample_grads = []
+  # logging.warning(f"fafafw: {batch.keys()}")
 
-  # logging.warning(f"[rank {rank}] iter {global_step} before loss_fn")
-  loss_dict = workload.loss_fn(
-    label_batch=batch['targets'],
-    logits_batch=logits_batch,
-    mask_batch=batch.get('weights'),
-    label_smoothing=label_smoothing,
-  )
-  # logging.warning(f"[rank {rank}] iter {global_step} after loss_fn")
-  summed_loss = loss_dict['summed']
-  n_valid_examples = loss_dict['n_valid_examples']
-  if USE_PYTORCH_DDP:
-    # Use dist_nn.all_reduce to ensure correct loss and gradient scaling.
-    # logging.warning(f"[rank {rank}] iter {global_step} Before normal_all_reduce")
-    summed_loss = dist_nn.all_reduce(summed_loss)
-    n_valid_examples = dist_nn.all_reduce(n_valid_examples)
-    # logging.warning(f"[rank {rank}] iter {global_step} After normal_all_reduce")
-  loss = summed_loss / n_valid_examples
-  # logging.warning(f"[rank {rank}] iter {global_step} Before normal_backward")
-  loss.backward()
-  # logging.warning(f"[rank {rank}] iter {global_step} After normal_backward")
+  B = batch["inputs"].shape[0]
 
-  if hasattr(hyperparameters, 'grad_clip'):
-    grad_clip = hyperparameters.grad_clip
-    torch.nn.utils.clip_grad_norm_(
-      current_model.parameters(), max_norm=grad_clip
-    )
-  optimizer_state['optimizer'].step()
-  # optimizer_state['scheduler'].step()
+  per_sample_grads = []
+  per_sample_grad_norms = []
+  per_sample_losses = []
+
+  for i in range(B):
+      model.zero_grad()
+
+      single_batch = {
+          k: (v[i:i+1] if isinstance(v, torch.Tensor) else v)
+          for k, v in batch.items()
+      }
+
+      logits_i, _ = workload.model_fn(
+          params=model,
+          augmented_and_preprocessed_input_batch=single_batch,
+          model_state=model_state,
+          mode=spec.ForwardPassMode.TRAIN,
+          rng=rng,
+          update_batch_norm=False,
+          dropout_rate=0.0,
+      )
+
+      loss_dict_i = workload.loss_fn(
+          label_batch=single_batch['targets'],
+          logits_batch=logits_i,
+          mask_batch=single_batch.get('weights'),
+          label_smoothing=hyperparameters.label_smoothing,
+      )
+
+      loss_i = loss_dict_i['summed'] / loss_dict_i['n_valid_examples']
+      loss_i.backward()
+
+      # ===== flatten gradient =====
+      grads = []
+      for p in model.parameters():
+          if p.grad is not None:
+              grads.append(p.grad.detach().flatten())
+
+      g_vec = torch.cat(grads)
+
+      per_sample_grads.append(g_vec)
+      per_sample_grad_norms.append(g_vec.norm())
+      per_sample_losses.append(loss_i.detach())
+
+  # ===============================
+  # stack gradients
+  G = torch.stack(per_sample_grads)   # [B, D]
+
+  # normalize
+  G_norm = G / (G.norm(dim=1, keepdim=True) + 1e-12)
+
+  # cosine similarity matrix
+  cos_matrix = G_norm @ G_norm.t()
+
+  print("Grad cosine mean:", cos_matrix.mean().item())
+  print("Grad cosine min :", cos_matrix.min().item())
+
+  # ===== NEW: magnitude statistics =====
+  grad_norms = torch.stack(per_sample_grad_norms)
+  print("Grad |g| mean :", grad_norms.mean().item())
+  print("Grad |g| min  :", grad_norms.min().item())
+  print("Grad |g| max  :", grad_norms.max().item())
+  print("Grad |g| ratio(max/min):", (grad_norms.max() / (grad_norms.min()+1e-12)).item())
+
+  # ===== NEW: loss statistics =====
+  losses = torch.stack(per_sample_losses)
+  print("Loss mean :", losses.mean().item())
+  print("Loss min  :", losses.min().item())
+  print("Loss max  :", losses.max().item())
+  print("Loss ratio(max/min):", (losses.max() / (losses.min()+1e-12)).item())
 
   # Log training metrics - loss, grad_norm, batch_size.
-  if global_step <= 10 or global_step % 500 == 0:
-  # if True:
-    with torch.no_grad():
-      parameters = [p for p in current_model.parameters() if p.grad is not None]
-      grad_norm = torch.norm(
-        torch.stack([torch.norm(p.grad.detach(), 2) for p in parameters]), 2
-      )
-    if workload.metrics_logger is not None:
-      lr = optimizer_state['optimizer'].param_groups[0]['lr']
-      workload.metrics_logger.append_scalar_metrics(
-        {
-          'loss': loss.item(),
-          'grad_norm': grad_norm.item(),
-          'lr': lr
-        },
-        global_step,
-      )
-    logging.info(
-      '%d) loss = %0.3f, grad_norm = %0.3f',
-      global_step,
-      loss.item(),
-      grad_norm.item(),
-    )
+#   if global_step <= 10 or global_step % 500 == 0:
+#   # if True:
+#     with torch.no_grad():
+#       parameters = [p for p in current_model.parameters() if p.grad is not None]
+#       grad_norm = torch.norm(
+#         torch.stack([torch.norm(p.grad.detach(), 2) for p in parameters]), 2
+#       )
+#     if workload.metrics_logger is not None:
+#       lr = optimizer_state['optimizer'].param_groups[0]['lr']
+#       workload.metrics_logger.append_scalar_metrics(
+#         {
+#           'loss': loss.item(),
+#           'grad_norm': grad_norm.item(),
+#           'lr': lr
+#         },
+#         global_step,
+#       )
+
+#     logging.info(
+#       '%d) loss = %0.3f, grad_norm = %0.3f',
+#       global_step,
+#       loss.item(),
+#       grad_norm.item(),
+#     )
   # torch.cuda.synchronize()
   # peak_alloc = torch.cuda.max_memory_allocated() / 1024**2
   # peak_reserved = torch.cuda.max_memory_reserved() / 1024**2
@@ -264,7 +305,7 @@ def update_params(
   # )
   
 
-  return (optimizer_state, current_param_container, new_model_state)
+  return (optimizer_state, current_param_container, None)
 
 
 
@@ -321,6 +362,116 @@ def get_batch_size(workload_name):
     return 512
   else:
     raise ValueError(f'Unsupported workload name: {workload_name}.')
+  
+from dataclasses import dataclass, field
+import os
+import csv
+import math
+
+@dataclass
+class PlateauState:
+    best: float | None = None
+    num_bad_steps: int = 0
+    last_reduce_step: int = -10**18
+    last_seen_len: int = 0
+    last_seen_last_value: float | None = None
+    last_checked_step: int = -1
+    last_result: bool = False
+    loss_list: List[float] = field(default_factory=list)
+
+STATE = PlateauState()
+
+def check_reduce_plateau(
+    log_dir,
+    patience,
+    global_step,
+    cooldown=0,
+    mode="min",
+):
+    # ------------------------------------------------------------
+    # 0. Idempotent
+    # ------------------------------------------------------------
+    if STATE.last_checked_step == global_step:
+        return STATE.last_result
+
+    values = STATE.loss_list
+    result = False
+
+    # ------------------------------------------------------------
+    # 1. Only advance on new observation
+    # ------------------------------------------------------------
+    curr_len = len(values)
+    curr_last = values[-1] if values else None
+
+    if (
+        curr_len == STATE.last_seen_len
+        and curr_last == STATE.last_seen_last_value
+    ):
+        STATE.last_checked_step = global_step
+        STATE.last_result = False
+        return False
+
+    STATE.last_seen_len = curr_len
+    STATE.last_seen_last_value = curr_last
+
+    # ------------------------------------------------------------
+    # 2. First observation → initialize baseline
+    # ------------------------------------------------------------
+    if STATE.best is None:
+        STATE.best = curr_last
+        STATE.num_bad_steps = 0
+        STATE.last_checked_step = global_step
+        STATE.last_result = False
+        return False
+
+    # ------------------------------------------------------------
+    # 3. Step-level improvement check
+    # ------------------------------------------------------------
+    improved = (
+        curr_last < STATE.best
+        if mode == "min"
+        else curr_last > STATE.best
+    )
+
+    if improved:
+        STATE.best = curr_last
+        STATE.num_bad_steps = 0
+        STATE.last_checked_step = global_step
+        STATE.last_result = False
+        return False
+
+    # ------------------------------------------------------------
+    # 4. Bad-step counting
+    # ------------------------------------------------------------
+    STATE.num_bad_steps += 1
+    if STATE.num_bad_steps < patience:
+        STATE.last_checked_step = global_step
+        STATE.last_result = False
+        return False
+
+    # ------------------------------------------------------------
+    # 5. Cooldown (only after first trigger)
+    # ------------------------------------------------------------
+    if (
+        cooldown > 0
+        and STATE.last_reduce_step >= 0
+        and global_step - STATE.last_reduce_step <= cooldown
+    ):
+        STATE.last_checked_step = global_step
+        STATE.last_result = False
+        return False
+
+    # ------------------------------------------------------------
+    # 6. Trigger plateau (edge-trigger)
+    # ------------------------------------------------------------
+    STATE.last_reduce_step = global_step
+    STATE.num_bad_steps = 0
+    STATE.best = curr_last
+    result = True
+
+    STATE.last_checked_step = global_step
+    STATE.last_result = result
+    return result
 
 def data_selection(
   workload: spec.Workload,
@@ -331,6 +482,7 @@ def data_selection(
   hyperparameters: spec.Hyperparameters,
   global_step: int,
   rng: spec.RandomState,
+  log_dir: Optional[str] = None
 ) -> Dict[str, spec.Tensor]:
   """Select data from the infinitely repeating, pre-shuffled input queue.
   Each element of the queue is a batch of training examples and labels.
@@ -344,8 +496,13 @@ def data_selection(
   del rng
 
   line_search_interval = int(round(hyperparameters.interval * workload.step_hint))
+  warmup_length = int(0.01 * workload.step_hint)
+  # is_plateau = check_reduce_plateau(log_dir=log_dir, global_step=global_step, patience=5)
+  # logging.warning(f"is_line_search = {is_plateau}, state={STATE}")
+  
 
-  if global_step % line_search_interval != 0:
+
+  if global_step % 10 != 0:
     batch = next(input_queue)
   else:
     n_search_batches = getattr(hyperparameters, "accum_steps", 4)

@@ -332,15 +332,22 @@ class LineSearchScheduler():
         
         if k != 0: 
             if self.prev_alpha >= self.line_search_alpha: 
+                # progress in [0, 1]
+                t = (k + 1) / interval
+                # cosine interpolation (smooth start & end)
+                cosine_frac = 0.5 * (1 - math.cos(math.pi * t))
+                lr = self.prev_alpha + cosine_frac * (
+                    self.line_search_alpha - self.prev_alpha
+                )
+
                 for param_group in self.optimizer.param_groups: 
-                    param_group['lr'] = self.line_search_alpha
-                    return 
+                    param_group['lr'] = lr
+                return
             warmup_frac = (k + 1) / interval
             lr = self.prev_alpha + warmup_frac * (self.line_search_alpha - self.prev_alpha)
             for param_group in self.optimizer.param_groups: 
                 param_group['lr'] = lr 
             return
-        
 
 
         self.optimizer.zero_grad(set_to_none=True)
@@ -471,7 +478,7 @@ def line_search_armijo(f, derphi0, phi0, args=(), c1=1e-4, alpha0=1, num_search=
             # alpha, phi1 = search_bisection_ddp(phi, phi0, derphi0, c1=c1,
             #                                 old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, amin=1e-6, num_search=num_search)
             alpha, phi1 = search_bisection_ddp_visual(phi, phi0, derphi0, c1=c1,
-                                              old_alpha=alpha0, shrink=factor, grow=1/factor, amax=1, amin=1e-6, num_search=num_search, plot_path=f"backtracking_{step}.png")
+                                              old_alpha=alpha0, shrink=factor, grow=1/factor, amax=1, amin=1e-6, num_search=num_search, plot_path=f"./img_decay/backtracking_{step}.png")
     else:
             alpha, phi1 = search_bisection(phi, phi0, derphi0, c1=c1,
                                             old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, amin=1e-6, num_search=num_search)
@@ -728,53 +735,53 @@ def search_bisection_ddp_visual(phi, phi0, derphi0, c1,
 
                 alpha = new_alpha
                 phi_a = new_phi
-    def reduce_mean_scalar(x):
-        if not ddp_on:
-            return float(x) if not torch.is_tensor(x) else float(x.detach().item())
-        if not torch.is_tensor(x):
-            x = torch.tensor(float(x), device="cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            x = x.detach()
-            if x.dim() != 0:
-                x = x.reshape(())
-        dist.all_reduce(x, op=dist.ReduceOp.SUM)
-        x /= world_size
-        return float(x.item())
+    # def reduce_mean_scalar(x):
+    #     if not ddp_on:
+    #         return float(x) if not torch.is_tensor(x) else float(x.detach().item())
+    #     if not torch.is_tensor(x):
+    #         x = torch.tensor(float(x), device="cuda" if torch.cuda.is_available() else "cpu")
+    #     else:
+    #         x = x.detach()
+    #         if x.dim() != 0:
+    #             x = x.reshape(())
+    #     dist.all_reduce(x, op=dist.ReduceOp.SUM)
+    #     x /= world_size
+    #     return float(x.item())
     
-    phi0_g = reduce_mean_scalar(phi0)
-    derphi0_g = reduce_mean_scalar(derphi0)
+    # phi0_g = reduce_mean_scalar(phi0)
+    # derphi0_g = reduce_mean_scalar(derphi0)
 
-    t_vals = np.linspace(1e-6, 1e-3, num_points)
-    phi_vals = []
-    for t in t_vals:
-            v_local = phi(float(t))
-            v = reduce_mean_scalar(v_local)
-            phi_vals.append(v)
+    # t_vals = np.linspace(1e-6, max(4*old_alpha, alpha, 1e-3), num_points)
+    # phi_vals = []
+    # for t in t_vals:
+    #         v_local = phi(float(t))
+    #         v = reduce_mean_scalar(v_local)
+    #         phi_vals.append(v)
     
-    phi_vals = np.array(phi_vals)
-    if is_rank0:
-        logging.warning(f"phi_vals{phi_vals}")
-        armijo_line = phi0_g + c1 * t_vals * derphi0_g
+    # phi_vals = np.array(phi_vals)
+    # if is_rank0:
+    #     logging.warning(f"phi_vals{phi_vals}")
+    #     armijo_line = phi0_g + c1 * t_vals * derphi0_g
 
-        plt.figure(figsize=(8, 6))
-        plt.plot(t_vals, phi_vals, label="phi(t)", linewidth=2)
-        plt.plot(t_vals, armijo_line, "--", label="Armijo line", linewidth=2)
+    #     plt.figure(figsize=(8, 6))
+    #     plt.plot(t_vals, phi_vals, label="phi(t)", linewidth=2)
+    #     plt.plot(t_vals, armijo_line, "--", label="Armijo line", linewidth=2)
 
-        for i, (a, v) in enumerate(explored):
-            plt.scatter(a, v, color="red", s=60)
-            plt.annotate("init" if i == 0 else f"bt {i}",
-                         (a, v), textcoords="offset points", xytext=(5, 5))
+    #     for i, (a, v) in enumerate(explored):
+    #         plt.scatter(a, v, color="red", s=60)
+    #         plt.annotate("init" if i == 0 else f"bt {i}",
+    #                      (a, v), textcoords="offset points", xytext=(5, 5))
 
-        plt.scatter(alpha, phi_a,
-                    color="blue", s=120, marker="x", label="chosen alpha")
+    #     plt.scatter(alpha, phi_a,
+    #                 color="blue", s=120, marker="x", label="chosen alpha")
 
-        plt.xlabel("t (step size)")
-        plt.ylabel("phi(t)")
-        plt.title("Backtracking Line Search Visualization (DDP)")
-        plt.grid(True)
-        plt.legend()
-        plt.savefig(plot_path, dpi=200)
-        plt.close()
+    #     plt.xlabel("t (step size)")
+    #     plt.ylabel("phi(t)")
+    #     plt.title("Backtracking Line Search Visualization (DDP)")
+    #     plt.grid(True)
+    #     plt.legend()
+    #     plt.savefig(plot_path, dpi=200)
+    #     plt.close()
 
             
 
