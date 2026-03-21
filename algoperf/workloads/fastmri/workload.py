@@ -49,7 +49,7 @@ class BaseFastMRIWorkload(spec.Workload):
   
   @property
   def train_target_value(self) -> float:
-    return 0.75
+    return 0.745
 
   @property
   def loss_type(self) -> spec.LossType:

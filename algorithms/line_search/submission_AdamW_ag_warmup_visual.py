@@ -9,7 +9,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from algoperf import spec
 from algoperf.pytorch_utils import pytorch_setup
-from .lr_sched_ag_warmup import LineSearchScheduler
+from .lr_sched_ag_warmup_visual import LineSearchScheduler
 import time
 
 
@@ -178,7 +178,7 @@ def update_params(
   # logging.warning(f"[rank {rank}] iter {global_step} before model_fn")
 
   scheduler = optimizer_state['scheduler']
-  c1 = hyperparameters.c1 + (1 - hyperparameters.c1) * (global_step / (0.75 * workload.step_hint))
+  c1 = hyperparameters.c1 + (1 - hyperparameters.c1) * (global_step / 0.8 * workload.step_hint)
   scheduler.step(
                 closure,
                 c1=c1,

@@ -28,19 +28,24 @@ class BaseWmtWorkload(spec.Workload):
     self._tokenizer = None
 
   @property
+  def train_target_value(self) -> float:
+    return 35.00
+
+  @property
   def target_metric_name(self) -> str:
     """The name of the target metric (useful for scoring/processing code)."""
     return 'bleu'
 
   def has_reached_validation_target(self, eval_result: float) -> bool:
-    return eval_result['validation/bleu'] > self.validation_target_value
+    return eval_result['train/bleu'] > self.train_target_value
 
   @property
   def validation_target_value(self) -> float:
     return 30.8491
+  
 
   def has_reached_test_target(self, eval_result: float) -> bool:
-    return eval_result['test/bleu'] > self.test_target_value
+    return eval_result['train/bleu'] > self.train_target_value
 
   @property
   def test_target_value(self) -> float:

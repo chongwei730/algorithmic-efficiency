@@ -547,10 +547,10 @@ def line_search_armijo(f, derphi0, phi0, args=(), c1=1e-4, alpha0=1, num_search=
     use_ddp = dist.is_initialized() 
     # logging.warning(f"USE DDP {use_ddp}")
     if use_ddp:
-            alpha, phi1 = search_bisection_ddp(phi, phi0, derphi0, c1=c1,
-                                            old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, amin=1e-6, num_search=num_search)
-            # alpha, phi1 = search_bisection_ddp_visual(phi, phi0, derphi0, c1=c1,
-            #                                   old_alpha=alpha0, shrink=factor, grow=1/factor, amax=1, amin=1e-6, num_search=num_search, log_dir=log_dir, global_step=step)
+            # alpha, phi1 = search_bisection_ddp(phi, phi0, derphi0, c1=c1,
+            #                                 old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, amin=1e-6, num_search=num_search)
+            alpha, phi1 = search_bisection_ddp_visual(phi, phi0, derphi0, c1=c1,
+                                              old_alpha=alpha0, shrink=factor, grow=1/factor, amax=1, amin=1e-6, num_search=num_search, log_dir=log_dir, global_step=step)
     else:
             alpha, phi1 = search_bisection(phi, phi0, derphi0, c1=c1,
                                             old_alpha=alpha0, grow=1/factor, shrink=factor, amax=1, amin=1e-6, num_search=num_search)

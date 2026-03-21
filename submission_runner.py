@@ -120,7 +120,7 @@ flags.DEFINE_string('experiment_name', None, 'Name of the experiment.')
 flags.DEFINE_string('mode', 'line_search', 'mode')
 flags.DEFINE_boolean(
   'save_checkpoints',
-  True,
+  False,
   'Whether or not to save checkpoints of the model and optimizer '
   'at every eval and after training.',
 )

@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 # CONFIG
 # ============================================================
 
-BASE_DIR = "/scratch.global/chen8596/mlcommons_experiments_TEST_TEST/"
+BASE_DIR = "/scratch.global/chen8596/mlcommons_experiments/"
 # BASE_DIR = "./test"
 TRIAL_GLOB = "trial_*"
 
@@ -19,13 +19,16 @@ TRIAL_GLOB = "trial_*"
 TRAIN_LOSS_COL = "train/loss"
 LR_COL = "lr"
 
+# Clip plotted steps to this maximum
+max_global_step = 200000
+
 from scoring import scoring_utils
 
 # Helper to pick validation metric for a workload (e.g. validation/accuracy or validation/mean_average_precision)
 def get_validation_metric_for_workload(workload_dir_name):
     # scoring_utils expects a workload identifier with framework suffix (e.g., cifar_pytorch)
     try:
-        metric, target = scoring_utils.get_workload_metrics_and_targets(workload_dir_name, split='validation')
+        metric, target = scoring_utils.get_workload_metrics_and_targets(workload_dir_name, split='test')
         return metric
     except Exception:
         # Fallback to validation/accuracy if unknown workload
@@ -91,6 +94,14 @@ for algo in algorithms:
         continue
 
     for workload in workloads:
+        
+        # per-workload max step (override for wmt workloads)
+        if "wmt" in workload:
+            print(workload)
+            max_global_step = 100000
+        else:
+            max_global_step = 200000
+
         workload_root = os.path.join(algo_root, workload)
         trials = sorted(glob.glob(os.path.join(workload_root, TRIAL_GLOB)))
         if len(trials) == 0:
@@ -115,6 +126,10 @@ for algo in algorithms:
                 df = load_csv(os.path.join(t, "eval_measurements.csv"))
             if df is None or TRAIN_LOSS_COL not in df.columns:
                 continue
+
+            # restrict to steps up to max_global_step when available
+            if "global_step" in df.columns:
+                df = df[df["global_step"] <= max_global_step]
 
             mask = df[TRAIN_LOSS_COL].notna()
             if mask.sum() == 0:
@@ -153,6 +168,10 @@ for algo in algorithms:
             if df is None or val_metric not in df.columns:
                 continue
 
+            # restrict to steps up to max_global_step when available
+            if "global_step" in df.columns:
+                df = df[df["global_step"] <= max_global_step]
+
             mask = df[val_metric].notna()
             if mask.sum() == 0:
                 continue
@@ -190,6 +209,10 @@ for algo in algorithms:
             if df is None or train_metric not in df.columns:
                 continue
 
+            # restrict to steps up to max_global_step when available
+            if "global_step" in df.columns:
+                df = df[df["global_step"] <= max_global_step]
+
             mask = df[train_metric].notna()
             if mask.sum() == 0:
                 continue
@@ -225,6 +248,10 @@ for algo in algorithms:
             df = load_csv(os.path.join(t, "measurements.csv"))
             if df is None or LR_COL not in df.columns:
                 continue
+
+            # restrict to steps up to max_global_step when available
+            if "global_step" in df.columns:
+                df = df[df["global_step"] <= max_global_step]
 
             mask = df[LR_COL].notna()
             if mask.sum() == 0:

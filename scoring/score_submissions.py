@@ -85,6 +85,8 @@ def get_summary_df(workload, workload_df, include_test_split=False):
   summary_df['trial'] = workload_df['trial'].apply(lambda x: x[0])
   summary_df['val target metric name'] = validation_metric
   summary_df['val target metric value'] = validation_target
+  print("DRTDYTT",workload_df)
+  print(workload)
 
   summary_df['val target reached'] = (
     workload_df[validation_metric]
@@ -158,12 +160,20 @@ def get_summary_df(workload, workload_df, include_test_split=False):
       train_metric, train_target = scoring_utils.get_workload_metrics_and_targets(
         workload, split='train'
       )
-      summary_df['final train loss'] = workload_df['train/loss'].apply(
-        lambda x: x[-1]
-      )
-      summary_df['best train loss'] = workload_df['train/loss'].apply(
-        lambda x: np.min(x)
-      )
+      try: 
+        summary_df['final train loss'] = workload_df['train/loss'].apply(
+          lambda x: x[-1]
+        )
+        summary_df['best train loss'] = workload_df['train/loss'].apply(
+          lambda x: np.min(x)
+        )
+      except:
+        summary_df['final train loss'] = workload_df['train/ctc_loss'].apply(
+          lambda x: x[-1]
+        )
+        summary_df['best train loss'] = workload_df['train/ctc_loss'].apply(
+          lambda x: np.min(x)
+        )
 
       summary_df['final train accuracy'] = workload_df[train_metric].apply(
         lambda x: x[-1] 
