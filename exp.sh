@@ -73,10 +73,10 @@ SELF_METHODS=(
 #   "self_adamg"
 #   "self_baseline"
 #   "self_nadamw_sequential"
-  # "self_schedule_free_adamw"
+  "self_schedule_free_adamw"
 #   "self_sinv6"
 #   "self_sinv6_75"
-"self_Line_Search_AdamW"
+# "self_Line_Search_AdamW"
 )
 
 
