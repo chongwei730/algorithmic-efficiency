@@ -78,6 +78,13 @@ class BaseMnistWorkload(spec.Workload):
     """The name of the target metric (useful for scoring/processing code)."""
     return 'accuracy'
 
+  def has_reached_training_target(self, eval_result: Dict[str, float]) -> bool:
+    return eval_result['train/accuracy'] > self.train_target_value
+
+  @property
+  def train_target_value(self) -> float:
+    return self.validation_target_value
+
   def has_reached_validation_target(
     self, eval_result: Dict[str, float]
   ) -> bool:

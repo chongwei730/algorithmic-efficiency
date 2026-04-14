@@ -37,10 +37,16 @@ class BaseOgbgWorkload(spec.Workload):
   def num_message_passing_steps(self) -> int:
     return 5
 
-  def has_reached_validation_target(self, eval_result: float) -> bool:
+  def has_reached_training_target(self, eval_result: float) -> bool:
     return (
       eval_result['train/mean_average_precision']
       > self.train_target_value
+    )
+
+  def has_reached_validation_target(self, eval_result: float) -> bool:
+    return (
+      eval_result['validation/mean_average_precision']
+      > self.validation_target_value
     )
 
   @property
@@ -48,7 +54,9 @@ class BaseOgbgWorkload(spec.Workload):
     return 0.28098
 
   def has_reached_test_target(self, eval_result: float) -> bool:
-    return eval_result['train/mean_average_precision'] > self.train_target_value
+    return (
+      eval_result['test/mean_average_precision'] > self.test_target_value
+    )
 
   @property
   def test_target_value(self) -> float:

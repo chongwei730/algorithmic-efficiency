@@ -33,15 +33,18 @@ class BaseFastMRIWorkload(spec.Workload):
     """Number of channels."""
     return 32
 
-  def has_reached_validation_target(self, eval_result: float) -> bool:
+  def has_reached_training_target(self, eval_result: float) -> bool:
     return eval_result['train/ssim'] > self.train_target_value
+
+  def has_reached_validation_target(self, eval_result: float) -> bool:
+    return eval_result['validation/ssim'] > self.validation_target_value
 
   @property
   def validation_target_value(self) -> float:
     return 0.723653
 
   def has_reached_test_target(self, eval_result: float) -> bool:
-    return eval_result['train/ssim'] > self.train_target_value
+    return eval_result['test/ssim'] > self.test_target_value
 
   @property
   def test_target_value(self) -> float:

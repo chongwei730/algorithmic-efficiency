@@ -114,6 +114,10 @@ class Workload(metaclass=abc.ABCMeta):
     """Return whether or not the workload validation goal has been reached."""
 
   @abc.abstractmethod
+  def has_reached_training_target(self, eval_result: Dict[str, float]) -> bool:
+    """Return whether or not the workload training goal has been reached."""
+
+  @abc.abstractmethod
   def has_reached_test_target(self, eval_result: Dict[str, float]) -> bool:
     """Return whether or not the workload test goal has been reached."""
 
@@ -150,6 +154,11 @@ class Workload(metaclass=abc.ABCMeta):
   @abc.abstractmethod
   def validation_target_value(self) -> float:
     """The validation target value to reach."""
+
+  @property
+  @abc.abstractmethod
+  def train_target_value(self) -> float:
+    """The training target value to reach."""
 
   @property
   @abc.abstractmethod

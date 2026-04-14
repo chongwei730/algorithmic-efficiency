@@ -29,6 +29,11 @@ class BaseCriteo1TbDlrmSmallWorkload(spec.Workload):
     """The name of the target metric (useful for scoring/processing code)."""
     return 'loss'
 
+  def has_reached_training_target(
+    self, eval_result: Dict[str, float]
+  ) -> bool:
+    return eval_result['train/loss'] < self.train_target_value
+
   def has_reached_validation_target(
     self, eval_result: Dict[str, float]
   ) -> bool:
@@ -51,6 +56,10 @@ class BaseCriteo1TbDlrmSmallWorkload(spec.Workload):
   @property
   def validation_target_value(self) -> float:
     return 0.123735
+
+  @property
+  def train_target_value(self) -> float:
+    return self.validation_target_value
 
   def has_reached_test_target(self, eval_result: Dict[str, float]) -> bool:
     return eval_result['test/loss'] < self.test_target_value

@@ -304,6 +304,7 @@ def train_once(
 
   # Bookkeeping.
   train_state = {
+    'training_goal_reached': False,
     'validation_goal_reached': False,
     'test_goal_reached': False,
     'is_time_remaining': True,
@@ -341,6 +342,9 @@ def train_once(
       preemption_count,
       checkpoint_dir=log_dir,
     )
+    train_state.setdefault('training_goal_reached', False)
+    train_state.setdefault('validation_goal_reached', False)
+    train_state.setdefault('test_goal_reached', False)
     meta_file_name = os.path.join(log_dir, f'meta_data_{preemption_count}.json')
     logging.info(f'Saving meta data to {meta_file_name}.')
     meta_data = logger_utils.get_meta_data(workload, rng_seed)
@@ -360,7 +364,8 @@ def train_once(
 
   logging.info('Starting training loop.')
   goals_reached = (
-    train_state['validation_goal_reached'] and train_state['test_goal_reached']
+    train_state['training_goal_reached']
+    and train_state['validation_goal_reached']
   )
   while (
     train_state['is_time_remaining']
@@ -477,6 +482,10 @@ def train_once(
             # Note that this is one of the stopping conditions for the length of
             # a training run. To score the run we only consider the time
             # to validation target retrospectively.
+            train_state['training_goal_reached'] = (
+              workload.has_reached_training_target(latest_eval_result)
+              or train_state['training_goal_reached']
+            )
             train_state['validation_goal_reached'] = (
               workload.has_reached_validation_target(latest_eval_result)
               or train_state['validation_goal_reached']
@@ -486,9 +495,15 @@ def train_once(
               or train_state['test_goal_reached']
             )
             goals_reached = (
-              train_state['validation_goal_reached']
-              and train_state['test_goal_reached']
+              train_state['training_goal_reached']
+              and train_state['validation_goal_reached']
             )
+            latest_eval_result['train_metric_reached'] = str(
+              train_state['training_goal_reached']
+            ).lower()
+            latest_eval_result['val_metric_reached'] = str(
+              train_state['validation_goal_reached']
+            ).lower()
             # Save last eval time.
             eval_end_time = get_time()
             train_state['last_eval_time'] = eval_end_time
@@ -933,7 +948,5 @@ if __name__ == '__main__':
   flags.mark_flag_as_required('experiment_dir')
   flags.mark_flag_as_required('experiment_name')
   app.run(main)
-
-
 
 

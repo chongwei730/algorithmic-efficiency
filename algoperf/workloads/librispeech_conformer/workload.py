@@ -24,10 +24,15 @@ class BaseLibrispeechWorkload(spec.Workload):
   def attention_temperature(self) -> float:
     raise NotImplementedError
 
-  def has_reached_validation_target(
+  def has_reached_training_target(
     self, eval_result: Dict[str, float]
   ) -> bool:
     return eval_result['train/wer'] < self.train_target_value
+
+  def has_reached_validation_target(
+    self, eval_result: Dict[str, float]
+  ) -> bool:
+    return eval_result['validation/wer'] < self.validation_target_value
   
   @property
   def train_target_value(self) -> float:
@@ -38,7 +43,7 @@ class BaseLibrispeechWorkload(spec.Workload):
     return 0.085884
 
   def has_reached_test_target(self, eval_result: Dict[str, float]) -> bool:
-    return eval_result['train/wer'] < self.train_target_value
+    return eval_result['test/wer'] < self.test_target_value
 
   @property
   def test_target_value(self) -> float:

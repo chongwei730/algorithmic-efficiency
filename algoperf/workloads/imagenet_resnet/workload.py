@@ -19,17 +19,22 @@ class BaseImagenetResNetWorkload(spec.Workload):
   def train_target_value(self) -> float:
     return 0.95
 
-  def has_reached_validation_target(
+  def has_reached_training_target(
     self, eval_result: Dict[str, float]
   ) -> bool:
     return eval_result['train/accuracy'] > self.train_target_value
+
+  def has_reached_validation_target(
+    self, eval_result: Dict[str, float]
+  ) -> bool:
+    return eval_result['validation/accuracy'] > self.validation_target_value
 
   @property
   def validation_target_value(self) -> float:
     return 1 - 0.22569  # 0.77431
 
   def has_reached_test_target(self, eval_result: Dict[str, float]) -> bool:
-    return eval_result['train/accuracy'] > self.train_target_value
+    return eval_result['test/accuracy'] > self.test_target_value
 
   @property
   def test_target_value(self) -> float:

@@ -3,6 +3,7 @@
 import collections
 import json
 import logging
+import numbers
 import os.path
 import platform
 import re
@@ -132,6 +133,16 @@ def write_to_csv(
   with open(csv_path, 'w') as csv_file:
     measurements.to_csv(csv_file, index=False)
   return
+
+
+def _get_numeric_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:
+  numeric_metrics = {}
+  for key, value in metrics.items():
+    if isinstance(value, bool):
+      numeric_metrics[key] = int(value)
+    elif isinstance(value, numbers.Number):
+      numeric_metrics[key] = value
+  return numeric_metrics
 
 
 def _get_utilization() -> Dict:
@@ -351,14 +362,15 @@ class MetricLogger(object):
     if is_eval:
       write_to_csv(metrics, self._eval_csv_path)
 
+    numeric_metrics = _get_numeric_metrics(metrics)
     if self._tb_metric_writer:
       self._tb_metric_writer.write_scalars(
-        step=int(metrics['global_step']), scalars=metrics
+        step=int(metrics['global_step']), scalars=numeric_metrics
       )
       self._tb_metric_writer.flush()
 
     if wandb is not None and self.use_wandb:
-      wandb.log(metrics)
+      wandb.log(numeric_metrics)
 
   def finish(self) -> None:
     if wandb is not None and self.use_wandb:
